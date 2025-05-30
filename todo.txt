@@ -1,0 +1,12 @@
+--better to implement from top to bottom
+Encrypted Database
+Sign-In and Login
+Onion Routing: includes checksum and error detection
+sending and receiving messages for only online users, messages are text messages and medias
+main scene UI: include online chat and offline chat
+notifications: tell the receiver who sent a message
+logs: include all events
+-bonus scores
+modern and comprehensible UI
+automatic testing
+voice call
