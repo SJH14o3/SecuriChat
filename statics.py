@@ -11,8 +11,19 @@ CLIENT_FETCH_ONLINE_USERS_REQUEST = "802"
 CLIENT_CHECK_SERVER_AVAILABILITY = "803"
 CLIENT_TEMPORARILY_LOGIN_REQUEST = "804"
 CLIENT_LOG_OFF = "805"
+CLIENT_LOGIN_REQUEST = "806"
 
 ILLEGAL_REQUEST = "700"
+BUFFER = "701"
+
+DATABASE_SIGNIN_SUCCESS = "600"
+DATABASE_SIGNIN_USERNAME_CONFLICT = "601"
+DATABASE_SIGNIN_FAILURE = "602"
+DATABASE_LOGIN_SUCCESS = "603"
+DATABASE_LOGIN_USERNAME_NOT_FOUND = "604"
+DATABASE_LOGIN_PASSWORD_MISSMATCH = "605"
+DATABASE_ENCRYPTION_FAILED = "606"
+DATABASE_USERNAME_NOT_FOUND = "607"
 
 # used to print request name
 def convert_to_request_name(request):
@@ -40,4 +51,20 @@ def convert_to_request_name(request):
         return "client-logoff-ok"
     elif request == ILLEGAL_REQUEST:
         return "illegal-request"
+    elif request == DATABASE_SIGNIN_SUCCESS:
+        return "database-signin-success"
+    elif request == DATABASE_SIGNIN_USERNAME_CONFLICT:
+        return "database-signin-username-conflict"
+    elif request == DATABASE_SIGNIN_FAILURE:
+        return "database-signin-failure"
+    elif request == DATABASE_LOGIN_SUCCESS:
+        return "database-log-login-success"
+    elif request == DATABASE_LOGIN_USERNAME_NOT_FOUND:
+        return "database-log-login-username-not found"
+    elif request == DATABASE_LOGIN_PASSWORD_MISSMATCH:
+        return "database-log-password-mismatch"
+    elif request == DATABASE_ENCRYPTION_FAILED:
+        return "database-encryption-failed"
+    elif request == BUFFER:
+        return "buffer"
     return "invalid"

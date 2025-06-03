@@ -3,21 +3,69 @@ import threading
 import time
 import json
 import shutil
-from user import User
+import server_database
+from onlineuser import OnlineUser
 from typing import List
 from statics import *
 from pathlib import Path
 from log import Log
 
 PORT = 36432
-online_users: List[User] = []
+online_users: List[OnlineUser] = []
 online_users_lock = threading.Lock()
 log = Log("server") # log file name which is server
 
+# when a client filled information to log in, this function is called
 def sign_in_request(conn: socket, addr):
-    # TODO: implement
-    pass
+    conn.send(SERVER_OK.encode())
+    info = conn.recv(1024).decode()
+    conn.send(SERVER_OK.encode())
+    length_bytes = conn.recv(4)
+    image_length = int.from_bytes(length_bytes, byteorder='big') # image size is converted into integer
+    conn.send(SERVER_OK.encode())
+    # receiving image profile
+    received_data = b''
+    while len(received_data) < image_length:
+        chunk = conn.recv(min(4096, image_length - len(received_data)))
+        if not chunk:
+            break
+        received_data += chunk
 
+    conn.send(SERVER_OK.encode())
+    # now we parse user information
+    d = json.loads(info)
+    conn.recv(1024).decode() # buffer from user
+    global log
+    username = d['username']
+    public_key = d['public_key']
+    display_name = d['display_name']
+    # running the SQLite query
+    db_result = server_database.sign_in_user(username, d["password"], d["email"], public_key, received_data, display_name, log)
+    conn.send(db_result.encode())
+    conn.close()
+    if db_result == DATABASE_SIGNIN_SUCCESS:
+        log.append_log(f"New user {username} successfully signed in {addr[0]}:{addr[1]}")
+    else:
+        log.append_log(f"{username} with address {addr[0]}:{addr[1]} failed to sign in: {convert_to_request_name(db_result)}")
+
+# when a user wants to login, this function is called
+def login_request(conn: socket, addr):
+    conn.send(SERVER_OK.encode())
+    info = conn.recv(1024).decode()
+    d = json.loads(info)
+    username = d['username']
+    password = d['password']
+    db_result = server_database.login_user(username, password)
+    conn.send(db_result.encode())
+    conn.close()
+    if db_result == DATABASE_LOGIN_SUCCESS:
+        log.append_log(f"user {username} successfully logged in with address: {addr[0]}:{addr[1]}")
+    else:
+        s = convert_to_request_name(db_result)
+        invalid = "invalid"
+        log.append_log(f"user {username} successfully logged in with address: {addr[0]}:{addr[1]}, error: {db_result if invalid == s else s}")
+
+# resetting log folder
 def reset_log_folder():
     folder = Path("logs")
     # Check if it exists before deleting
@@ -54,16 +102,6 @@ def ping_users():
         with online_users_lock:
             log.append_users_logs("pinged all users, remaining users" ,online_users)
 
-# this is temporarily and will be removed later on
-def temporarily_signin_request(conn: socket, addr):
-    conn.send(SERVER_OK.encode())
-    data = conn.recv(1024).decode().split("?")
-    conn.send(SERVER_LOGIN_OK.encode())
-    user_ = User(is_online=True, ip_address=addr[0], port=int(data[1]), name=data[0])
-    with online_users_lock:
-        online_users.append(user_)
-    log.append_log(f"user logged in: {user_}")
-
 # user requests is handled here
 def handle_client_request(conn: socket, addr):
     try:
@@ -77,8 +115,8 @@ def handle_client_request(conn: socket, addr):
             elif request == CLIENT_CHECK_SERVER_AVAILABILITY:
                 conn.send(SERVER_CONNECT_OK.encode())
                 log.append_log(f"sent server-is-accessible request to {addr}")
-            elif request == CLIENT_TEMPORARILY_LOGIN_REQUEST:
-                temporarily_signin_request(conn, addr)
+            elif request == CLIENT_LOGIN_REQUEST:
+                login_request(conn, addr)
             elif request == CLIENT_LOG_OFF:
                 conn.send(SERVER_LOG_OFF_OK.encode())
                 log.append_log(f"user {addr} logged off")
@@ -92,8 +130,8 @@ def handle_client_request(conn: socket, addr):
                 log.append_log(f"unknown request: {request} from {addr}, connection is closed")
                 break
         conn.close()
-    except:
-        print("unexpected error occurred in handle_client_request function")
+    except Exception as e:
+        print(f"unexpected error occurred in handle_client_request function: {e}")
         conn.close()
 
 # initializing server
@@ -102,10 +140,11 @@ def initialize_server():
     socket_connection.bind(('127.0.0.1', PORT))
     socket_connection.listen(10)
     reset_log_folder()
+
     # initializing the online user checker thread
     online_users_checker = threading.Thread(target=ping_users)
     online_users_checker.start()
-
+    server_database.create_users_table_if_not_exists()
     print("server's ready, pending clients...")
     # create a thread for each client request
     while True:

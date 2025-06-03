@@ -1,33 +1,117 @@
 import socket
+import struct
 import threading
 import random
 import time
 import json
 import sys
-
-from PySide6.QtCore import QRegularExpression, QTimer
-from PySide6.QtGui import QRegularExpressionValidator
-
+from PIL import Image
+from PySide6.QtCore import QRegularExpression, QTimer, Qt, QByteArray, QBuffer, QIODevice
+from PySide6.QtGui import QRegularExpressionValidator, QPixmap, QIcon, QColor, QImage, QPainter
 from statics import *
 from server import PORT
-from user import User
+from onlineuser import OnlineUser
 from log import Log
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QLineEdit, QMessageBox
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QLineEdit, QMessageBox, \
+    QFileDialog, QColorDialog, QMainWindow, QStackedWidget
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+from temp import MainWindow
+
+USERNAME_REGEX = r"^[a-zA-Z0-9_.-]{3,20}$"
+PASSWORD_REGEX = r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*?&]{6,}$"
 
 isRunning = True # useful to finish threads
 ip_address = None # ip address of incoming messages socket for this client
 port: int = 0 # port of incoming messages socket for this client
 log: Log # log file, it will be initialized after a successful login/sign in. name is socket of incoming messages
-window: QWidget # window of UI
 
+# generates public and private keys using RSA-2048
+def generate_public_and_private_keys():
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048
+    )
 
-def log_in(conn: socket, addr):
-    # todo: implement
-    pass
+    # Get public key from it
+    public_key = private_key.public_key()
 
-def sign_up(conn: socket, addr):
-    # todo: implement
-    pass
+    # Serialize public key to store in database (PEM format as string)
+    public_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode('utf-8')
+
+    # Serialize private key (optional, for storing on client securely)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()  # You can use password-based encryption here
+    ).decode('utf-8')
+
+    return private_pem, public_pem
+
+# trying to logging in user
+def log_in(username, password):
+    socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    socket_connection.connect(('127.0.0.1', PORT))
+    socket_connection.send(CLIENT_LOGIN_REQUEST.encode())
+    result = socket_connection.recv(1024).decode()
+    # first we send everything other than profile image in json format
+    info = {
+        "username": username,
+        "password": password
+    }
+    socket_connection.send(json.dumps(info).encode())
+    db_result = socket_connection.recv(1024).decode()
+    if db_result == DATABASE_LOGIN_SUCCESS:
+        return True, None
+    else:
+        invalid = "invalid"
+        con = convert_to_request_name(db_result)
+        return False, db_result if invalid == con else con
+
+# trying to signing in user
+def sign_up(username: str, password: str, email:str, profile_image: bytes, display_name:str):
+    private_key_bytes , public_key_bytes = generate_public_and_private_keys()
+    socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    socket_connection.connect(('127.0.0.1', PORT))
+    socket_connection.send(CLIENT_SIGN_IN_REQUEST.encode())
+    result = socket_connection.recv(1024).decode()
+    if result != SERVER_OK:
+        raise Exception("Server error")
+    # first we send everything other than profile image in json format
+    info = {
+        "username": username,
+        "password": password,
+        "email": email,
+        "public_key": public_key_bytes,
+        "display_name": display_name
+    }
+    socket_connection.send(json.dumps(info).encode())
+    result = socket_connection.recv(1024).decode()
+    if result != SERVER_OK:
+        raise Exception("Server error")
+    # secondly we send the size of image to server
+    socket_connection.sendall(len(profile_image).to_bytes(4, byteorder="big"))
+    result = socket_connection.recv(1024).decode()
+    if result != SERVER_OK:
+        raise Exception("Server error")
+    # lastly we send the image
+    socket_connection.sendall(profile_image)
+    result = socket_connection.recv(1024).decode()
+    if result != SERVER_OK:
+        raise Exception("Server error")
+    print("SENT SUCCESSFULLY")
+    socket_connection.send(BUFFER.encode())
+    db_result = socket_connection.recv(1024).decode()
+    if db_result != DATABASE_SIGNIN_SUCCESS:
+        return False, db_result
+    else:
+        print("everything's okay")
+    socket_connection.close()
+    return True, None
+
 
 # every 5 seconds, a logged in client will fetch online clients
 def fetch_online_users():
@@ -38,7 +122,7 @@ def fetch_online_users():
             socket_connection.send(CLIENT_FETCH_ONLINE_USERS_REQUEST.encode())
             data = socket_connection.recv(4096).decode()
             user_dicts = json.loads(data)
-            users = [User(**d) for d in user_dicts]
+            users = [OnlineUser(**d) for d in user_dicts]
             global ip_address, port
             for user in users:
                 if user.address_is_equal(port, ip_address):
@@ -48,36 +132,6 @@ def fetch_online_users():
             time.sleep(5)
         except:
             print("something went wrong")
-
-# temporarily and will be removed later on
-def temporary_signin(conn: socket):
-    conn.send(CLIENT_TEMPORARILY_LOGIN_REQUEST.encode())
-    response = conn.recv(1024).decode()
-    if response != SERVER_OK:
-        raise Exception("Server login failed")
-    receiver_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    receiver_socket.bind(('127.0.0.1', 0))
-    local_port = receiver_socket.getsockname()[1]
-    global log
-    log = Log(f"{local_port}")
-    username = f"client#{random.randint(0,1000)}?{local_port}"
-    # making client ready to response before telling server that we are online
-    income_connection = threading.Thread(target=receive_connection, args=(receiver_socket, local_port, receiver_socket.getsockname()[0]))
-    income_connection.start()
-    conn.send(f"{username}".encode())
-    response = conn.recv(1024).decode()
-    if response != SERVER_LOGIN_OK:
-        raise Exception("Server login failed")
-
-    fetch_users_thread = threading.Thread(target=fetch_online_users)
-    fetch_users_thread.start()
-    conn.send(CLIENT_LOG_OFF.encode())
-    response = conn.recv(1024).decode()
-    if response != SERVER_LOG_OFF_OK:
-        raise Exception("Server logoff failed")
-    conn.close()
-    while isRunning:
-        time.sleep(1)
 
 # first make sure that server is online, then sign-in/login process
 def connect_to_server():
@@ -89,8 +143,6 @@ def connect_to_server():
         response = socket_connection.recv(1024).decode()
         if response != SERVER_CONNECT_OK:
             raise Exception("Server response was invalid")
-        # server is online
-        temporary_signin(socket_connection)
 
     except ConnectionRefusedError:
         print("Connection refused: make sure server is running.")
@@ -125,16 +177,18 @@ def receive_connection(conn, conn_port: int, conn_addr):
         thread.start()
 
 # UI class for logging in scene
-class UI(QWidget):
-    def __init__(self):
+class LoginPage(QWidget):
+    def __init__(self, switch_to_signin_callback, main_window: MainWindow):
         super().__init__()
-        self.setWindowTitle("SecuriChat")
-        self.setFixedSize(300, 200)
         self.connected = False
         self.error_message = None
         self.connect_to_server()
+        self.window = main_window
         # if connection to server was successful, then we will show the login scene
         if self.connected:
+            self.switch_to_signin_callback = switch_to_signin_callback
+            self.pixmap = QPixmap("icon.png").scaled(150, 150)
+            self.label = QLabel(self)
             self.switch_button = QPushButton("Switch to Sign Up")
             self.login_button = QPushButton("Log In")
             self.password_input = QLineEdit()
@@ -142,7 +196,7 @@ class UI(QWidget):
             self.username_input = QLineEdit()
             self.username_label = QLabel("Username:")
             self.setup_ui()
-            self.show()
+            main_window.show()
         else:
             # if it wasn't then an error is shown and program will exit
             QTimer.singleShot(0, self.show_connection_failed_dialog)
@@ -174,27 +228,38 @@ class UI(QWidget):
             self.error_message = f"Socket error: {e}."
         except Exception as e:
             self.error_message = f"Unknown error: {e}."
+
     # we validate user input
     def validate_inputs(self):
-        # TODO: complete implementation
-        if self.username_input.hasAcceptableInput() and self.password_input.hasAcceptableInput():
-            QMessageBox.information(self, "Success", "Inputs are valid!")
+        if not self.username_input.hasAcceptableInput():
+            QMessageBox.critical(self, "Error", "Invalid username format\nusername must contain only letters, numbers and underscores,\n with 3 to 20 characters")
+        elif not self.password_input.hasAcceptableInput():
+            QMessageBox.critical(self, "Error", "Invalid password format\npassword must contain only letters, numbers and punctuations,\n with at one digit and one letter and at least 6 characters")
         else:
-            QMessageBox.warning(self, "Error", "Invalid username or password format.")
+            result, error = log_in(self.username_input.text(), self.password_input.text())
+            if result:
+                print("login successful")
+            else:
+                QMessageBox.critical(self, "Error", f"login failed: {error}")
 
     # setting up log in scene
     def setup_ui(self):
 
-        username_regex = QRegularExpression(r"^[a-zA-Z0-9_.-]{3,20}$")
+        username_regex = QRegularExpression(USERNAME_REGEX)
         self.username_input.setValidator(QRegularExpressionValidator(username_regex))
 
         self.password_input.setEchoMode(QLineEdit.Password)
-        password_regex = QRegularExpression(r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*?&]{6,}$")
+        password_regex = QRegularExpression(PASSWORD_REGEX)
         self.password_input.setValidator(QRegularExpressionValidator(password_regex))
 
         self.login_button.clicked.connect(self.validate_inputs)
+        self.switch_button.clicked.connect(self.switch_to_signin_callback)
+
+        self.label.setPixmap(self.pixmap)
+        self.label.setAlignment(Qt.AlignCenter)
 
         layout = QVBoxLayout()
+        layout.addWidget(self.label)
         layout.addWidget(self.username_label)
         layout.addWidget(self.username_input)
         layout.addWidget(self.password_label)
@@ -203,12 +268,164 @@ class UI(QWidget):
         layout.addWidget(self.switch_button)
 
         self.setLayout(layout)
-        self.show()
 
+# sign in page handler
+class SigninPage(QWidget):
+    def __init__(self, switch_to_login_callback):
+        super().__init__()
+        self.setWindowTitle("Sign Up")
+        self.pixmap = QPixmap("icon.png").scaled(150, 150)
+        self.label = QLabel(self)
+        self.username_input = QLineEdit()
+        self.password_input = QLineEdit()
+        self.email_input = QLineEdit()
+        self.display_name_input = QLineEdit()
+
+        self.image_label = QLabel()
+        self.image_label.setFixedSize(300, 300)
+        self.image_label.setAlignment(Qt.AlignCenter)
+
+        self.profile_image_path = "user_profile.png"  # initial image
+        self.load_initial_profile_image()
+
+        self.pick_image_button = QPushButton("Select Image from your device")
+        self.pick_image_button.clicked.connect(self.select_image)
+
+        self.color_button = QPushButton("Pick Background Color")
+        self.color_button.clicked.connect(self.select_color)
+
+        self.confirm_button = QPushButton("Confirm")
+        self.confirm_button.clicked.connect(self.validate_inputs)
+
+        self.switch_button = QPushButton("Switch to Login")
+        self.switch_button.clicked.connect(switch_to_login_callback)
+
+        self.init_validators()
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.label.setPixmap(self.pixmap)
+        self.label.setAlignment(Qt.AlignCenter)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self.label)
+        layout.addWidget(QLabel("Username:"))
+        layout.addWidget(self.username_input)
+
+        layout.addWidget(QLabel("Password:"))
+        self.password_input.setEchoMode(QLineEdit.Password)
+        layout.addWidget(self.password_input)
+
+        layout.addWidget(QLabel("Email:"))
+        layout.addWidget(self.email_input)
+
+        layout.addWidget(QLabel("Display Name:"))
+        layout.addWidget(self.display_name_input)
+
+        layout.addWidget(self.image_label)
+        layout.addWidget(self.color_button)
+        layout.addWidget(self.pick_image_button)
+
+        layout.addWidget(self.confirm_button)
+        layout.addWidget(self.switch_button)
+
+        self.setLayout(layout)
+
+    def init_validators(self):
+        self.username_input.setValidator(QRegularExpressionValidator(QRegularExpression(USERNAME_REGEX)))
+        self.password_input.setValidator(QRegularExpressionValidator(QRegularExpression(PASSWORD_REGEX)))
+        self.email_input.setValidator(QRegularExpressionValidator(QRegularExpression(r"^[\w\.-]+@[\w\.-]+\.\w+$")))
+
+    def load_initial_profile_image(self):
+        color = QColor(random.randint(0,255), random.randint(0,255), random.randint(0,255))
+        self.update_profile_image_with_color(color)
+
+    def update_profile_image_with_color(self, color):
+        pixmap = QPixmap(self.profile_image_path).scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        image = QImage(300, 300, QImage.Format_ARGB32)
+        image.fill(color)
+
+        painter = QPainter(image)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+        self.image_label.setPixmap(QPixmap.fromImage(image))
+        self.final_image = image
+
+    def select_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.update_profile_image_with_color(color)
+
+    def select_image(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.jpeg)")
+        if path:
+            img = Image.open(path)
+            size = min(img.size)
+            img = img.crop(((img.width - size) // 2, (img.height - size) // 2,
+                            (img.width + size) // 2, (img.height + size) // 2))
+            img = img.resize((300, 300))
+            img.save("temp_profile.png")
+            self.profile_image_path = "temp_profile.png"
+            self.update_profile_image_with_color(QColor(255, 255, 255))  # default white
+
+    def validate_inputs(self):
+        if not self.username_input.hasAcceptableInput():
+            self.show_error("Invalid username format\nusername must contain only letters, numbers and underscores,\n with 3 to 20 characters")
+            return
+        if not self.password_input.hasAcceptableInput():
+            self.show_error("Invalid password format\npassword must contain only letters, numbers and punctuations,\n with at one digit and one letter and at least 6 characters")
+            return
+        if not self.email_input.hasAcceptableInput():
+            self.show_error("Invalid email format.")
+            return
+        if self.display_name_input.text().strip() == "":
+            self.show_error("Display name cannot be empty.")
+            return
+
+        byte_array = QByteArray()
+        buffer = QBuffer(byte_array)
+        buffer.open(QIODevice.WriteOnly)
+        self.final_image.save(buffer, "PNG")
+        buffer.close()
+        byte_image = bytes(byte_array)
+
+        # Call backend function
+        result, error_message = sign_up(self.username_input.text(), self.password_input.text(), self.email_input.text(), byte_image, self.display_name_input.text())
+        if result:
+            QMessageBox.information(self, "Success", "Signed up successfully!")
+        else:
+            print(error_message)
+            QMessageBox.critical(self, "Error", f"Sign up failed: {convert_to_request_name(error_message)}")
+
+    def show_error(self, message):
+        QMessageBox.critical(self, "Validation Error", message)
+
+# a main window for switching fast between login and sign in pages
+class MainWindow(QStackedWidget):
+    def __init__(self):
+        super().__init__()
+        self.login_page= LoginPage(self.show_signin, self)
+        self.signin_page = SigninPage(self.show_login)
+        self.addWidget(self.login_page)
+        self.addWidget(self.signin_page)
+        self.setCurrentIndex(0)
+        self.setFixedSize(300, 350)
+        self.setWindowTitle("SecuriChat")
+
+    def show_signin(self):
+        self.setFixedSize(300, 800)
+        self.setCurrentIndex(1)
+
+    def show_login(self):
+        self.setFixedSize(300, 350)
+        self.setCurrentIndex(0)
 
 def main():
     app = QApplication(sys.argv)
-    window = UI()
+    app.setWindowIcon(QIcon("icon.png"))
+    global window
+    window = MainWindow()
     sys.exit(app.exec())
 
 if __name__ == '__main__':

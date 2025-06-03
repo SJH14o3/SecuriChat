@@ -1,6 +1,6 @@
 import time
 from typing import List
-from user import User
+from onlineuser import OnlineUser
 from threading import Lock
 from datetime import datetime
 
@@ -10,6 +10,7 @@ class Log:
         self.path = f"logs/{path}.log" # for server, log is saved into server.log and for client is saved to {it's port}.log
         self.lock = Lock() # lock is needed since app is multithreaded
 
+    # append log to the path
     def append_log(self, message):
         with self.lock:
             with open(self.path, "a") as log:
@@ -17,7 +18,7 @@ class Log:
 
     # converts a user list into a single string
     @staticmethod
-    def get_users_as_single_string(users: List[User]):
+    def get_users_as_single_string(users: List[OnlineUser]):
         out = []
         if len(users) == 0:
             return "no users"
@@ -25,7 +26,7 @@ class Log:
             out.append(user.__str__())
         return "users: " + ','.join(out)
 
-    def append_users_logs(self, header ,users: List[User]):
+    def append_users_logs(self, header, users: List[OnlineUser]):
         with self.lock:
             with open(self.path, "a") as log:
                 log.write(f"{TimeUtils.get_readable_time()}->{header}: {self.get_users_as_single_string(users)}\n")
