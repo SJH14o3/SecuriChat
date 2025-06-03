@@ -10,3 +10,7 @@ logs: include all events
 modern and comprehensible UI
 automatic testing
 voice call
+-database
+use SQLite for both server and client and encrypt it
+in server: username (unique), hashed password using a salt, maybe email, public key, profile picture, last seen, display name
+client: messages, sender/receiver, timestamp, attachment, private key
