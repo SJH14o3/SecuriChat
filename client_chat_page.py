@@ -27,6 +27,27 @@ def receive_image_bytes_from_socket(conn: socket.socket) -> bytes:
     conn.send(BUFFER.encode())
     return received_data
 
+def fetch_online_users() -> List[OnlineUser]:
+    """Fetch list of online users from server"""
+    online_users = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.connect(('127.0.0.1', PORT))
+        s.send(CLIENT_FETCH_ONLINE_USERS_REQUEST.encode())
+        s.recv(1024).decode()  # server OK
+        s.send(BUFFER.encode())  # client OK
+        count = int(s.recv(1024).decode())  # count of online users
+        s.send(BUFFER.encode())  # client OK
+        
+        for _ in range(count):
+            data = s.recv(1024).decode()  # user json
+            s.send(BUFFER.encode())  # client OK
+            user = OnlineUser.from_json(data)
+            image = receive_image_bytes_from_socket(s)
+            user.profile_picture = image
+            online_users.append(user)
+            
+    return online_users
+
 class ClientChatMenu(QWidget):
     def __init__(self, online_user: OnlineUser, receiver_socket, log: Log):
         super().__init__()
