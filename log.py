@@ -24,7 +24,7 @@ class Log:
             return "no users"
         for user in users:
             out.append(user.__str__())
-        return "users: " + ','.join(out)
+        return "users: " + '---'.join(out)
 
     def append_users_logs(self, header, users: List[OnlineUser]):
         with self.lock:

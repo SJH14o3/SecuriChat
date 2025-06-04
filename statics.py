@@ -1,3 +1,6 @@
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice
+from PySide6.QtGui import QImage
+
 # this file contains all flags and project global variables
 SERVER_PING = "900"
 SERVER_CONNECT_OK = "901"
@@ -68,3 +71,12 @@ def convert_to_request_name(request):
     elif request == BUFFER:
         return "buffer"
     return "invalid"
+
+# converts QImage to bytes. used in transmitting messages through socket
+def convert_q_image_to_bytes(image: QImage) -> bytes:
+    byte_array = QByteArray()
+    buffer = QBuffer(byte_array)
+    buffer.open(QIODevice.WriteOnly)
+    image.save(buffer, "PNG")
+    buffer.close()
+    return bytes(byte_array)

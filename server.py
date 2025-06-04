@@ -9,17 +9,14 @@ from typing import List
 from statics import *
 from pathlib import Path
 from log import Log
+from timestamp import Timestamp
 
 PORT = 36432
 online_users: List[OnlineUser] = []
 online_users_lock = threading.Lock()
 log = Log("server") # log file name which is server
 
-# when a client filled information to log in, this function is called
-def sign_in_request(conn: socket, addr):
-    conn.send(SERVER_OK.encode())
-    info = conn.recv(1024).decode()
-    conn.send(SERVER_OK.encode())
+def receive_image(conn: socket.socket) -> bytes:
     length_bytes = conn.recv(4)
     image_length = int.from_bytes(length_bytes, byteorder='big') # image size is converted into integer
     conn.send(SERVER_OK.encode())
@@ -32,6 +29,21 @@ def sign_in_request(conn: socket, addr):
         received_data += chunk
 
     conn.send(SERVER_OK.encode())
+    return received_data
+
+def send_image(conn: socket.socket, profile_picture: bytes):
+    conn.sendall(len(profile_picture).to_bytes(4, byteorder="big"))
+    conn.recv(1024).decode()  # user sent buffer
+    conn.sendall(profile_picture)
+    conn.recv(1024).decode()  # user sent buffer
+
+
+# when a client filled information to log in, this function is called
+def sign_in_request(conn: socket, addr):
+    conn.send(SERVER_OK.encode())
+    info = conn.recv(1024).decode()
+    conn.send(SERVER_OK.encode())
+    received_data = receive_image(conn)
     # now we parse user information
     d = json.loads(info)
     conn.recv(1024).decode() # buffer from user
@@ -42,9 +54,13 @@ def sign_in_request(conn: socket, addr):
     # running the SQLite query
     db_result = server_database.sign_in_user(username, d["password"], d["email"], public_key, received_data, display_name, log)
     conn.send(db_result.encode())
-    conn.close()
     if db_result == DATABASE_SIGNIN_SUCCESS:
         log.append_log(f"New user {username} successfully signed in {addr[0]}:{addr[1]}")
+        tr_ip_address, port = conn.recv(1024).decode().split(":")
+        signed_in_user = OnlineUser(tr_ip_address, int(port), display_name, username, public_key, received_data, Timestamp.get_now())
+        time.sleep(1) # a one-second window for client to be able to response
+        with online_users_lock:
+            online_users.append(signed_in_user)
     else:
         log.append_log(f"{username} with address {addr[0]}:{addr[1]} failed to sign in: {convert_to_request_name(db_result)}")
 
@@ -57,9 +73,17 @@ def login_request(conn: socket, addr):
     password = d['password']
     db_result = server_database.login_user(username, password)
     conn.send(db_result.encode())
-    conn.close()
     if db_result == DATABASE_LOGIN_SUCCESS:
         log.append_log(f"user {username} successfully logged in with address: {addr[0]}:{addr[1]}")
+        tr_ip_address, port = conn.recv(1024).decode().split(":")
+        user_info = server_database.get_user(username)
+        online_user = OnlineUser(tr_ip_address, int(port), user_info.name, username, user_info.public_key, user_info.profile_picture, user_info.last_seen)
+        conn.sendall(online_user.to_json().encode())
+        conn.recv(1024).decode() # user sent buffer
+        send_image(conn, online_user.profile_picture)
+        time.sleep(1) # a one-second window for client to be able to response
+        with online_users_lock:
+            online_users.append(online_user)
     else:
         s = convert_to_request_name(db_result)
         invalid = "invalid"
@@ -75,9 +99,18 @@ def reset_log_folder():
 
 # each client will request online users every 5 seconds, and server responses
 def fetch_online_users_request(conn: socket, addr):
+    conn.send(SERVER_OK.encode())
+    conn.recv(1024).decode() # buffer
+    online_users_copy: List[OnlineUser] = []
     with online_users_lock:
-        users_json = json.dumps([json.loads(user_.to_json()) for user_ in online_users])
-        conn.sendall(users_json.encode())
+        online_users_copy = online_users.copy()
+    conn.send(f"{len(online_users_copy)}".encode()) # sending length of online clients
+    conn.recv(1024).decode() # buffer
+    for user_ in online_users_copy:
+        conn.send(user_.to_json().encode())
+        conn.recv(1024).decode() # client buffer
+        send_image(conn, user_.profile_picture)
+
     log.append_log(f"responded to fetch online users request from {addr}")
 
 # every 3 seconds, server will ping every user to check if they are still online
@@ -96,39 +129,35 @@ def ping_users():
                     if response != CLIENT_IS_ONLINE:
                         raise Exception("user sent invalid response")
             except Exception as e:
-                log.append_log(f"during pinging, user {user_} did not responded")
+                log.append_log(f"during pinging, user {user_} did not responded, reason: {e}")
                 with online_users_lock:
                     online_users.remove(user_)
         with online_users_lock:
             log.append_users_logs("pinged all users, remaining users" ,online_users)
 
 # user requests is handled here
-def handle_client_request(conn: socket, addr):
+def handle_client_request(conn: socket.socket, addr):
     try:
-        while True:
-            request = conn.recv(1024).decode()
-            log.append_log(f"received request: {convert_to_request_name(request)} from {addr}")
-            if request == CLIENT_SIGN_IN_REQUEST:
-                sign_in_request(conn, addr)
-            elif request == CLIENT_FETCH_ONLINE_USERS_REQUEST:
-                fetch_online_users_request(conn, addr)
-            elif request == CLIENT_CHECK_SERVER_AVAILABILITY:
-                conn.send(SERVER_CONNECT_OK.encode())
-                log.append_log(f"sent server-is-accessible request to {addr}")
-            elif request == CLIENT_LOGIN_REQUEST:
-                login_request(conn, addr)
-            elif request == CLIENT_LOG_OFF:
-                conn.send(SERVER_LOG_OFF_OK.encode())
-                log.append_log(f"user {addr} logged off")
-                with online_users_lock:
-                    for user_ in online_users:
-                        if user_.address_is_equal(addr[0], addr[1]):
-                            online_users.remove(user_)
-                            break
-                break
-            else:
-                log.append_log(f"unknown request: {request} from {addr}, connection is closed")
-                break
+        request = conn.recv(1024).decode()
+        log.append_log(f"received request: {convert_to_request_name(request)} from {addr}")
+        if request == CLIENT_SIGN_IN_REQUEST:
+            sign_in_request(conn, addr)
+        elif request == CLIENT_FETCH_ONLINE_USERS_REQUEST:
+            fetch_online_users_request(conn, addr)
+        elif request == CLIENT_CHECK_SERVER_AVAILABILITY:
+            conn.send(SERVER_CONNECT_OK.encode())
+            log.append_log(f"sent server-is-accessible request to {addr}")
+        elif request == CLIENT_LOGIN_REQUEST:
+            login_request(conn, addr)
+        elif request == CLIENT_LOG_OFF:
+            conn.send(SERVER_LOG_OFF_OK.encode())
+            log.append_log(f"user {addr} logged off")
+            with online_users_lock:
+                for user_ in online_users:
+                    if user_.address_is_equal(addr[0], addr[1]):
+                        online_users.remove(user_)
+        else:
+            log.append_log(f"unknown request: {request} from {addr}, connection is closed")
         conn.close()
     except Exception as e:
         print(f"unexpected error occurred in handle_client_request function: {e}")

@@ -4,6 +4,7 @@ from cryptography.fernet import Fernet
 from timestamp import Timestamp
 from statics import *
 from log import Log
+from user import User
 KEY = Fernet(os.environ.get("SocketProjectServerKey").encode()) # for now, key is stored in environment variables
 USERS_DB = "users.db"
 USERS = "users"
@@ -81,11 +82,26 @@ def login_user(username, password):
 def get_user_public_key(username):
     with sqlite3.connect(USERS_DB) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT public_key FROM users WHERE username = ?", (username,))
+        cursor.execute(f"SELECT {COLUMN_PUBLIC_KEY} FROM users WHERE username = ?", (username,))
         row = cursor.fetchone()
         if row is None:
             return DATABASE_USERNAME_NOT_FOUND
         return row[0]
+
+# get user based on their username
+def get_user(username) -> User | None:
+    with sqlite3.connect(USERS_DB) as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT {COLUMN_DISPLAY_NAME}, {COLUMN_PUBLIC_KEY}, {COLUMN_PROFILE_PICTURE}, {COLUMN_LAST_SEEN} FROM users WHERE username = ?", (username,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        display_name = row[0]
+        public_key = row[1]
+        profile_picture = row[2]
+        last_seen = Timestamp(row[3])
+        return User(username, display_name, public_key, profile_picture, last_seen)
+
 
 # every time when server is run, this function's called. it will create database if it doesn't exist
 def create_users_table_if_not_exists():

@@ -9,3 +9,6 @@ class User:
         self.profile_picture = profile_picture
         self.last_seen = last_seen
         self.is_online = False
+
+    def __str__(self):
+        return f"User: {self.username}, Name: {self.name}, last_seen: {self.last_seen.get_time_pretty(True)}, is online: {self.is_online}"

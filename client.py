@@ -1,5 +1,4 @@
 import socket
-import struct
 import threading
 import random
 import time
@@ -8,15 +7,17 @@ import sys
 from PIL import Image
 from PySide6.QtCore import QRegularExpression, QTimer, Qt, QByteArray, QBuffer, QIODevice
 from PySide6.QtGui import QRegularExpressionValidator, QPixmap, QIcon, QColor, QImage, QPainter
+import client_chat_page
+import timestamp
 from statics import *
 from server import PORT
 from onlineuser import OnlineUser
 from log import Log
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QLineEdit, QMessageBox, \
-    QFileDialog, QColorDialog, QMainWindow, QStackedWidget
+    QFileDialog, QColorDialog, QStackedWidget
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
-from temp import MainWindow
+from client_chat_page import ClientChatMenu
 
 USERNAME_REGEX = r"^[a-zA-Z0-9_.-]{3,20}$"
 PASSWORD_REGEX = r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*?&]{6,}$"
@@ -24,6 +25,7 @@ PASSWORD_REGEX = r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*?&]{6,}$"
 isRunning = True # useful to finish threads
 ip_address = None # ip address of incoming messages socket for this client
 port: int = 0 # port of incoming messages socket for this client
+receiver_socket: socket.socket # this instance is sent for online client
 log: Log # log file, it will be initialized after a successful login/sign in. name is socket of incoming messages
 
 # generates public and private keys using RSA-2048
@@ -51,8 +53,8 @@ def generate_public_and_private_keys():
 
     return private_pem, public_pem
 
-# trying to logging in user
-def log_in(username, password):
+# trying to log in user
+def log_in(username, password, main_window):
     socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     socket_connection.connect(('127.0.0.1', PORT))
     socket_connection.send(CLIENT_LOGIN_REQUEST.encode())
@@ -65,14 +67,30 @@ def log_in(username, password):
     socket_connection.send(json.dumps(info).encode())
     db_result = socket_connection.recv(1024).decode()
     if db_result == DATABASE_LOGIN_SUCCESS:
+        global receiver_socket
+        receiver_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        receiver_socket.bind(('127.0.0.1', 0))
+        rx_ip_address, local_port = receiver_socket.getsockname()
+        socket_connection.send(f"{rx_ip_address}:{local_port}".encode())
+        global ip_address, port, log
+        ip_address = rx_ip_address
+        port = local_port
+        log = Log(f"{port}")
+        data = socket_connection.recv(4096).decode()
+        online_user = OnlineUser.from_json(data)
+        socket_connection.send(BUFFER.encode())
+        profile_image = client_chat_page.receive_image_bytes_from_socket(socket_connection)
+        online_user.profile_picture = profile_image
+        main_window.switch_to_logged_in_client(online_user)
         return True, None
     else:
         invalid = "invalid"
         con = convert_to_request_name(db_result)
+        socket_connection.close()
         return False, db_result if invalid == con else con
 
-# trying to signing in user
-def sign_up(username: str, password: str, email:str, profile_image: bytes, display_name:str):
+# trying to sign in user
+def sign_up(username: str, password: str, email:str, profile_image: bytes, display_name:str, main_window):
     private_key_bytes , public_key_bytes = generate_public_and_private_keys()
     socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     socket_connection.connect(('127.0.0.1', PORT))
@@ -102,36 +120,24 @@ def sign_up(username: str, password: str, email:str, profile_image: bytes, displ
     result = socket_connection.recv(1024).decode()
     if result != SERVER_OK:
         raise Exception("Server error")
-    print("SENT SUCCESSFULLY")
     socket_connection.send(BUFFER.encode())
     db_result = socket_connection.recv(1024).decode()
     if db_result != DATABASE_SIGNIN_SUCCESS:
         return False, db_result
     else:
-        print("everything's okay")
+        global receiver_socket
+        receiver_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        receiver_socket.bind(('127.0.0.1', 0))
+        rx_ip_address, local_port = receiver_socket.getsockname()
+        socket_connection.send(f"{rx_ip_address}:{local_port}".encode())
+        global ip_address, port, log
+        ip_address = rx_ip_address
+        port = local_port
+        log = Log(f"{port}")
+        online_user = OnlineUser(ip_address, port, display_name, username,public_key_bytes, profile_image, timestamp.Timestamp.get_now())
+        main_window.switch_to_logged_in_client(online_user)
     socket_connection.close()
     return True, None
-
-
-# every 5 seconds, a logged in client will fetch online clients
-def fetch_online_users():
-    while isRunning:
-        try:
-            socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            socket_connection.connect(('127.0.0.1', PORT))
-            socket_connection.send(CLIENT_FETCH_ONLINE_USERS_REQUEST.encode())
-            data = socket_connection.recv(4096).decode()
-            user_dicts = json.loads(data)
-            users = [OnlineUser(**d) for d in user_dicts]
-            global ip_address, port
-            for user in users:
-                if user.address_is_equal(port, ip_address):
-                    users.remove(user)
-                    break
-            log.append_users_logs("other online users fetched" ,users)
-            time.sleep(5)
-        except:
-            print("something went wrong")
 
 # first make sure that server is online, then sign-in/login process
 def connect_to_server():
@@ -155,30 +161,9 @@ def connect_to_server():
     except Exception as e:
         print(e)
 
-# handling messages that are sent to client in a thread
-def handle_income_connection(conn: socket, addr):
-    global ip_address, port
-    while isRunning:
-        request = conn.recv(1024).decode()
-        if request == SERVER_PING: # responding to server ping which happens every 3 seconds
-            conn.send(CLIENT_IS_ONLINE.encode())
-            log.append_log("responded to server ping")
-
-
-# client will wait for connections and creates a thread for each thread
-def receive_connection(conn, conn_port: int, conn_addr):
-    global ip_address, port
-    port = conn_port
-    ip_address = conn_addr
-    conn.listen(10)
-    while isRunning:
-        transmitter, address = conn.accept()
-        thread = threading.Thread(target=handle_income_connection, args=(transmitter, conn))
-        thread.start()
-
 # UI class for logging in scene
 class LoginPage(QWidget):
-    def __init__(self, switch_to_signin_callback, main_window: MainWindow):
+    def __init__(self, switch_to_signin_callback, main_window: QStackedWidget):
         super().__init__()
         self.connected = False
         self.error_message = None
@@ -236,7 +221,7 @@ class LoginPage(QWidget):
         elif not self.password_input.hasAcceptableInput():
             QMessageBox.critical(self, "Error", "Invalid password format\npassword must contain only letters, numbers and punctuations,\n with at one digit and one letter and at least 6 characters")
         else:
-            result, error = log_in(self.username_input.text(), self.password_input.text())
+            result, error = log_in(self.username_input.text(), self.password_input.text(), self.window)
             if result:
                 print("login successful")
             else:
@@ -271,10 +256,11 @@ class LoginPage(QWidget):
 
 # sign in page handler
 class SigninPage(QWidget):
-    def __init__(self, switch_to_login_callback):
+    def __init__(self, switch_to_login_callback, main_window: QStackedWidget):
         super().__init__()
         self.setWindowTitle("Sign Up")
         self.pixmap = QPixmap("icon.png").scaled(150, 150)
+        self.main_window = main_window
         self.label = QLabel(self)
         self.username_input = QLineEdit()
         self.password_input = QLineEdit()
@@ -383,15 +369,10 @@ class SigninPage(QWidget):
             self.show_error("Display name cannot be empty.")
             return
 
-        byte_array = QByteArray()
-        buffer = QBuffer(byte_array)
-        buffer.open(QIODevice.WriteOnly)
-        self.final_image.save(buffer, "PNG")
-        buffer.close()
-        byte_image = bytes(byte_array)
+        byte_image = convert_q_image_to_bytes(self.final_image)
 
         # Call backend function
-        result, error_message = sign_up(self.username_input.text(), self.password_input.text(), self.email_input.text(), byte_image, self.display_name_input.text())
+        result, error_message = sign_up(self.username_input.text(), self.password_input.text(), self.email_input.text(), byte_image, self.display_name_input.text(), self.main_window)
         if result:
             QMessageBox.information(self, "Success", "Signed up successfully!")
         else:
@@ -406,12 +387,13 @@ class MainWindow(QStackedWidget):
     def __init__(self):
         super().__init__()
         self.login_page= LoginPage(self.show_signin, self)
-        self.signin_page = SigninPage(self.show_login)
+        self.signin_page = SigninPage(self.show_login, self)
         self.addWidget(self.login_page)
         self.addWidget(self.signin_page)
         self.setCurrentIndex(0)
         self.setFixedSize(300, 350)
         self.setWindowTitle("SecuriChat")
+        self.logged_in = False
 
     def show_signin(self):
         self.setFixedSize(300, 800)
@@ -420,6 +402,18 @@ class MainWindow(QStackedWidget):
     def show_login(self):
         self.setFixedSize(300, 350)
         self.setCurrentIndex(0)
+
+    def switch_to_logged_in_client(self, online_user: OnlineUser):
+        global receiver_socket, log
+        self.logged_in = True
+        self.chat_page = ClientChatMenu(online_user, receiver_socket, log)
+        self.addWidget(self.chat_page)
+        self.setCurrentWidget(self.chat_page)
+
+    def closeEvent(self, event):
+        if self.logged_in:
+            self.chat_page.isRunning = False
+            self.chat_page.close_threads()
 
 def main():
     app = QApplication(sys.argv)
