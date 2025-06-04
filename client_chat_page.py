@@ -60,10 +60,9 @@ class ClientChatMenu(QWidget):
         # Initialize P2P connection
         self.peer_connection = PeerConnection(
             username=online_user.username,
-            private_key=online_user.private_key,
+            private_key=self.get_private_key(),
             log=log
         )
-        
         # Register message handlers
         self.peer_connection.register_message_handler('text', self.handle_text_message)
         
@@ -71,7 +70,7 @@ class ClientChatMenu(QWidget):
         self.start_online_users_updater()
 
     def setup_ui(self):
-        self.setWindowTitle(f"SecuriChat - {self.online_user.display_name}")
+        self.setWindowTitle(f"SecuriChat - {self.online_user.name}")
         
         # Main layout
         layout = QHBoxLayout()
@@ -164,3 +163,9 @@ class ClientChatMenu(QWidget):
         self.peer_connection.stop()
         if hasattr(self, 'updater_thread'):
             self.updater_thread.join(timeout=1)
+
+    def get_private_key(self):
+        key: str
+        with open(f"users/{self.online_user.username}/private_key.key", "r") as private_key_file:
+            key = private_key_file.read()
+        return key

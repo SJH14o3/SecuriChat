@@ -1,7 +1,7 @@
 import socket
 import threading
 import random
-import time
+import os
 import json
 import sys
 from PIL import Image
@@ -27,6 +27,12 @@ ip_address = None # ip address of incoming messages socket for this client
 port: int = 0 # port of incoming messages socket for this client
 receiver_socket: socket.socket # this instance is sent for online client
 log: Log # log file, it will be initialized after a successful login/sign in. name is socket of incoming messages
+
+def store_key(private_key, username: str):
+    os.makedirs("users", exist_ok=True)
+    os.makedirs(f"users/{username}", exist_ok=True)
+    with open(f"users/{username}/private_key.key", "w") as f:
+        f.write(private_key)
 
 # generates public and private keys using RSA-2048
 def generate_public_and_private_keys():
@@ -134,6 +140,7 @@ def sign_up(username: str, password: str, email:str, profile_image: bytes, displ
         ip_address = rx_ip_address
         port = local_port
         log = Log(f"{port}")
+        store_key(private_key_bytes, username)
         online_user = OnlineUser(ip_address, port, display_name, username,public_key_bytes, profile_image, timestamp.Timestamp.get_now())
         main_window.switch_to_logged_in_client(online_user)
     socket_connection.close()
