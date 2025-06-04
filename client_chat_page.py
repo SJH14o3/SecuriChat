@@ -61,7 +61,8 @@ class ClientChatMenu(QWidget):
         self.peer_connection = PeerConnection(
             username=online_user.username,
             private_key=self.get_private_key(),
-            log=log
+            log=log,
+            receiver_socket=self.receiver_socket,
         )
         # Register message handlers
         self.peer_connection.register_message_handler('text', self.handle_text_message)

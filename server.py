@@ -178,8 +178,6 @@ def initialize_server():
     # create a thread for each client request
     while True:
         client, address = socket_connection.accept()
-        print("new client")
-        log.append_log("client connected with address: " + str(address))
         thread = threading.Thread(target=handle_client_request, args=(client, address))
         thread.start()
 

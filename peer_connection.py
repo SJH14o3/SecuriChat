@@ -6,9 +6,10 @@ from typing import Dict, Optional, Callable
 from message import OnionMessage, create_onion_message, process_onion_message, receive_final_message
 from message import MessageError, create_message_ack
 from log import Log
+from statics import *
 
 class PeerConnection:
-    def __init__(self, username: str, private_key: str, log: Log):
+    def __init__(self, username: str, private_key: str, log: Log, receiver_socket: socket.socket):
         self.username = username
         self.private_key = private_key
         self.log = log
@@ -17,8 +18,7 @@ class PeerConnection:
         self.is_running = True
         
         # Create listening socket
-        self.listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.listener_socket.bind(('127.0.0.1', 0))  # Let OS assign port
+        self.listener_socket = receiver_socket
         self.ip, self.port = self.listener_socket.getsockname()
         
         # Start listening thread
@@ -48,28 +48,34 @@ class PeerConnection:
     def _handle_peer_connection(self, peer_socket: socket.socket, address: tuple):
         """Handle incoming peer connection"""
         try:
-            # Receive the encrypted message
-            message_data = peer_socket.recv(4096)
-            if not message_data:
-                return
+            request  = peer_socket.recv(1024).decode()
+            if request == SERVER_PING:
+                self.log.append_log(f"answered to server ping")
+                peer_socket.send(CLIENT_IS_ONLINE.encode())
+            elif request == CLIENT_PEER_MESSAGE:
+                # Receive the encrypted message
+                peer_socket.send(BUFFER.encode())
+                message_data = peer_socket.recv(4096)
+                if not message_data:
+                    return
 
-            # Process the message
-            try:
-                message_dict = receive_final_message(message_data, self.private_key)
-                
-                # Send acknowledgment
-                ack = create_message_ack(message_dict['message_id'], message_dict['sender_id'])
-                peer_socket.send(json.dumps(ack).encode())
+                # Process the message
+                try:
+                    message_dict = receive_final_message(message_data, self.private_key)
 
-                # Handle different message types
-                message_type = message_dict.get('type', 'text')
-                if message_type in self.message_handlers:
-                    self.message_handlers[message_type](message_dict)
-                else:
-                    self.log.append_log(f"Received unknown message type: {message_type}")
+                    # Send acknowledgment
+                    ack = create_message_ack(message_dict['message_id'], message_dict['sender_id'])
+                    peer_socket.send(json.dumps(ack).encode())
 
-            except MessageError as e:
-                self.log.append_log(f"Error processing message: {str(e)}")
+                    # Handle different message types
+                    message_type = message_dict.get('type', 'text')
+                    if message_type in self.message_handlers:
+                        self.message_handlers[message_type](message_dict)
+                    else:
+                        self.log.append_log(f"Received unknown message type: {message_type}")
+
+                except MessageError as e:
+                    self.log.append_log(f"Error processing message: {str(e)}")
 
         except Exception as e:
             self.log.append_log(f"Error handling peer connection: {str(e)}")
@@ -97,6 +103,8 @@ class PeerConnection:
             # Send the message
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.connect(self.peers[recipient_username])
+                s.send(CLIENT_PEER_MESSAGE.encode())
+                s.recv(1024) # client OK
                 s.send(encrypted_message)
                 
                 # Wait for acknowledgment
@@ -106,11 +114,13 @@ class PeerConnection:
                     if ack.get('type') == 'ack' and ack.get('message_id') == message.message_id:
                         self.log.append_log(f"Message {message.message_id} acknowledged by {recipient_username}")
                         return True
+                    return False
                 except Exception as e:
                     self.log.append_log(f"Failed to receive acknowledgment: {str(e)}")
                     return False
 
         except Exception as e:
+            print("exception: ", e)
             self.log.append_log(f"Error sending message to {recipient_username}: {str(e)}")
             return False
 
