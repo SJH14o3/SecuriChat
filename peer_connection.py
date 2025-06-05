@@ -53,108 +53,140 @@ class PeerConnection:
             # Step 1: Get initial request
             try:
                 request = peer_socket.recv(1024).decode().strip()
-                print(f"[RECEIVE] Got initial request: '{request}'")
+                print(f"[RECEIVE] Got initial request: '{request}' from {address}")
+                self.log.append_log(f"Received request '{request}' from {address}")
             except Exception as e:
-                print(f"[RECEIVE] Error receiving initial request: {str(e)}")
+                print(f"[RECEIVE] Error receiving initial request from {address}: {str(e)}")
+                self.log.append_log(f"Error receiving request from {address}: {str(e)}")
                 return
-            
+
+            # Handle server ping
             if request == SERVER_PING:
                 try:
-                    self.log.append_log(f"answered to server ping")
+                    self.log.append_log(f"Answered to server ping from {address}")
                     peer_socket.sendall(CLIENT_IS_ONLINE.encode())
-                    print(f"[RECEIVE] Sent CLIENT_IS_ONLINE: '{CLIENT_IS_ONLINE}'")
+                    time.sleep(0.2)  # Wait for ping response to be sent
+                    print(f"[RECEIVE] Sent CLIENT_IS_ONLINE to {address}")
+                    return
                 except Exception as e:
-                    print(f"[RECEIVE] Error sending ping response: {str(e)}")
-                return
-                
-            if request != CLIENT_PEER_MESSAGE:  # Use CLIENT_PEER_MESSAGE instead of "900"
-                print(f"[RECEIVE] Unknown request type: '{request}'")
-                return
-                
-            print("[RECEIVE] Handling peer message...")
+                    print(f"[RECEIVE] Error sending ping response to {address}: {str(e)}")
+                    self.log.append_log(f"Error sending ping response to {address}: {str(e)}")
+                    return
             
-            # Step 2: Send ready signal
-            try:
-                ready_msg = BUFFER  # Use BUFFER instead of "READY_FOR_MESSAGE"
-                peer_socket.sendall(ready_msg.encode())
-                print(f"[RECEIVE] Sent ready signal: '{ready_msg}'")
-            except Exception as e:
-                print(f"[RECEIVE] Failed to send ready signal: {str(e)}")
-                return
-            
-            # Step 3: Receive message
-            try:
-                message_data = b""
-                while True:
-                    try:
-                        chunk = peer_socket.recv(8192)
-                        if not chunk:
-                            print("[RECEIVE] Connection closed while receiving message")
-                            return
-                        message_data += chunk
-                        if b"END_OF_MESSAGE" in message_data:
-                            message_data = message_data[:message_data.index(b"END_OF_MESSAGE")]
-                            break
-                    except socket.timeout:
-                        print("[RECEIVE] Timeout while receiving message")
-                        return
+            # Handle peer message
+            if request == CLIENT_PEER_MESSAGE:
+                print(f"[RECEIVE] Handling peer message from {address}...")
+                self.log.append_log(f"Handling peer message from {address}")
                 
-                if not message_data:
-                    print("[RECEIVE] No message data received")
+                # Step 2: Send ready signal
+                try:
+                    ready_msg = BUFFER
+                    peer_socket.sendall(ready_msg.encode())
+                    time.sleep(0.2)  # Wait for ready signal to be sent
+                    print(f"[RECEIVE] Sent ready signal '{ready_msg}' to {address}")
+                    self.log.append_log(f"Sent ready signal to {address}")
+                except Exception as e:
+                    print(f"[RECEIVE] Failed to send ready signal to {address}: {str(e)}")
+                    self.log.append_log(f"Failed to send ready signal to {address}: {str(e)}")
                     return
                 
-                print(f"[RECEIVE] Got message data of length: {len(message_data)}")
-            except Exception as e:
-                print(f"[RECEIVE] Error receiving message data: {str(e)}")
-                return
-            
-            # Step 4: Process message and send acknowledgment
-            try:
-                # Process the message
-                message_dict = receive_final_message(message_data, self.private_key)
-                print(f"[RECEIVE] Processed message from: {message_dict.get('sender_id')}")
-                
-                # Send ready for ack signal
+                # Step 3: Receive message with improved chunking
                 try:
+                    message_data = b""
+                    start_time = time.time()
+                    while True:
+                        if time.time() - start_time > 30:  # 30 second total timeout
+                            print(f"[RECEIVE] Total receive timeout from {address}")
+                            self.log.append_log(f"Timeout receiving message from {address}")
+                            return
+                            
+                        try:
+                            chunk = peer_socket.recv(8192)
+                            if not chunk:
+                                if message_data:  # If we have some data, wait a bit more
+                                    time.sleep(0.5)
+                                    continue
+                                print(f"[RECEIVE] Connection closed by {address} while receiving message")
+                                self.log.append_log(f"Connection closed by {address} during message receive")
+                                return
+                            
+                            message_data += chunk
+                            print(f"[RECEIVE] Got chunk of size {len(chunk)} from {address}")
+                            
+                            if b"END_OF_MESSAGE" in message_data:
+                                message_data = message_data[:message_data.index(b"END_OF_MESSAGE")]
+                                time.sleep(0.2)  # Wait a bit after receiving complete message
+                                break
+                        except socket.timeout:
+                            if message_data:  # If we have some data, wait a bit more
+                                time.sleep(0.5)
+                            continue  # Keep trying until total timeout
+                    
+                    if not message_data:
+                        print(f"[RECEIVE] No message data received from {address}")
+                        self.log.append_log(f"No message data received from {address}")
+                        return
+                    
+                    print(f"[RECEIVE] Got complete message data of length: {len(message_data)} from {address}")
+                    self.log.append_log(f"Received complete message ({len(message_data)} bytes) from {address}")
+                except Exception as e:
+                    print(f"[RECEIVE] Error receiving message data from {address}: {str(e)}")
+                    self.log.append_log(f"Error receiving message data from {address}: {str(e)}")
+                    return
+                
+                # Step 4: Process message and send acknowledgment
+                try:
+                    # Process the message
+                    print(f"[RECEIVE] Attempting to process message from {address}")
+                    self.log.append_log(f"Processing message from {address}")
+                    
+                    message_dict = receive_final_message(message_data, self.private_key)
+                    print(f"[RECEIVE] Successfully processed message from: {message_dict.get('sender_id')}")
+                    self.log.append_log(f"Successfully processed message from {message_dict.get('sender_id')}")
+                    time.sleep(0.2)  # Wait after processing
+                    
+                    # Send ready for ack signal
                     ready_ack = "READY_FOR_ACK"
                     peer_socket.sendall(ready_ack.encode())
-                    print(f"[RECEIVE] Sent ready for ack signal: '{ready_ack}'")
-                except Exception as e:
-                    print(f"[RECEIVE] Failed to send ready for ack: {str(e)}")
-                    return
-                
-                # Send acknowledgment
-                try:
+                    time.sleep(0.2)  # Wait for ready for ack to be sent
+                    print(f"[RECEIVE] Sent ready for ack signal to {address}")
+                    self.log.append_log(f"Sent ready for ack signal to {address}")
+                    
+                    # Send acknowledgment
                     ack = create_message_ack(message_dict['message_id'], message_dict['sender_id'])
                     ack_json = json.dumps(ack)
                     ack_msg = ack_json + "END_OF_ACK"
                     peer_socket.sendall(ack_msg.encode())
-                    print(f"[RECEIVE] Sent acknowledgment: '{ack_json}'")
-                except Exception as e:
-                    print(f"[RECEIVE] Failed to send acknowledgment: {str(e)}")
-                    return
-                
-                # Handle message type
-                try:
-                    message_type = message_dict.get('type', 'text')
+                    time.sleep(0.5)  # Longer wait after sending ack
+                    print(f"[RECEIVE] Sent acknowledgment to {address}: {ack_json}")
+                    self.log.append_log(f"Sent acknowledgment to {address}")
+                    
+                    # Handle message type
+                    message_type = message_dict.get('message_type', 'text')
                     if message_type in self.message_handlers:
                         self.message_handlers[message_type](message_dict)
+                        print(f"[RECEIVE] Successfully handled message of type {message_type} from {address}")
+                        self.log.append_log(f"Handled message of type {message_type} from {address}")
                     else:
-                        self.log.append_log(f"Received unknown message type: {message_type}")
+                        print(f"[RECEIVE] No handler for message type {message_type} from {address}")
+                        self.log.append_log(f"No handler for message type {message_type} from {address}")
                 except Exception as e:
-                    print(f"[RECEIVE] Error handling message type: {str(e)}")
-                    
-            except Exception as e:
-                print(f"[RECEIVE] Error processing message: {str(e)}")
-                self.log.append_log(f"Error processing message: {str(e)}")
-                
+                    print(f"[RECEIVE] Error processing message from {address}: {str(e)}")
+                    self.log.append_log(f"Error processing message from {address}: {str(e)}")
+                    return
+            else:
+                print(f"[RECEIVE] Unknown request type from {address}: '{request}'")
+                self.log.append_log(f"Unknown request type from {address}: '{request}'")
+
         except Exception as e:
-            print(f"[RECEIVE] Error in connection handler: {str(e)}")
-            self.log.append_log(f"Error handling peer connection: {str(e)}")
+            print(f"[RECEIVE] Error in connection handler for {address}: {str(e)}")
+            self.log.append_log(f"Error in connection handler for {address}: {str(e)}")
         finally:
             try:
+                time.sleep(1.0)  # Longer delay before closing to ensure all data is sent
                 peer_socket.close()
-                print("[RECEIVE] Connection closed")
+                print(f"[RECEIVE] Connection closed with {address}")
+                self.log.append_log(f"Connection closed with {address}")
             except:
                 pass
 
@@ -162,47 +194,42 @@ class PeerConnection:
         """Send a message to a peer"""
         if recipient_username not in self.peers:
             self.log.append_log(f"Unknown recipient: {recipient_username}")
-            print("[SEND] Recipient username not in peers")
+            print(f"[SEND] Recipient username '{recipient_username}' not in peers")
             return False
 
         try:
-            # Create message object
-            try:
-                message = OnionMessage(
-                    content=message_content,
-                    sender_id=self.username,
-                    recipient_id=recipient_username
-                )
-                print("[SEND] Created message object")
-            except Exception as e:
-                print(f"[SEND] Failed to create message: {str(e)}")
-                return False
+            # Get recipient info first
+            recipient_ip, recipient_port, recipient_public_key = self.peers[recipient_username]
+            print(f"[SEND] Got recipient info for {recipient_username} - IP: {recipient_ip}, Port: {recipient_port}")
 
-            # Get recipient info
-            try:
-                recipient_ip, recipient_port, recipient_public_key = self.peers[recipient_username]
-                print(f"[SEND] Got recipient info - IP: {recipient_ip}, Port: {recipient_port}")
-            except Exception as e:
-                print(f"[SEND] Failed to get recipient info: {str(e)}")
-                return False
+            # Create message object
+            message = OnionMessage(
+                content=message_content,
+                sender_id=self.username,
+                recipient_id=recipient_username,
+                message_type=message_type
+            )
+            print(f"[SEND] Created message object for {recipient_username}")
 
             # Add encryption layer
             try:
+                print(f"[SEND] Adding encryption layer for {recipient_username} using their public key")
                 message.add_layer(
                     node_public_key=recipient_public_key,
                     next_address=(recipient_ip, str(recipient_port))
                 )
-                print("[SEND] Added encryption layer")
+                print(f"[SEND] Successfully added encryption layer for {recipient_username}")
             except Exception as e:
-                print(f"[SEND] Failed to add encryption: {str(e)}")
+                print(f"[SEND] Failed to add encryption for {recipient_username}: {str(e)}")
                 return False
-
+            
             # Create encrypted message
             try:
+                print(f"[SEND] Creating final encrypted message for {recipient_username}")
                 encrypted_message = create_onion_message(message, self.private_key)
-                print("[SEND] Created encrypted message")
+                print(f"[SEND] Successfully created encrypted message of length {len(encrypted_message)}")
             except Exception as e:
-                print(f"[SEND] Failed to create encrypted message: {str(e)}")
+                print(f"[SEND] Failed to create encrypted message for {recipient_username}: {str(e)}")
                 return False
 
             # Send message
@@ -212,77 +239,112 @@ class PeerConnection:
                 
                 with s:
                     # Connect
+                    print(f"[SEND] Attempting to connect to {recipient_username} at {recipient_ip}:{recipient_port}")
                     s.connect((recipient_ip, int(recipient_port)))
-                    print(f"[SEND] Connected to {recipient_ip}:{recipient_port}")
+                    time.sleep(0.2)  # Wait after connection
+                    print(f"[SEND] Successfully connected to {recipient_username}")
                     
                     # Send initial request
+                    print(f"[SEND] Sending initial request to {recipient_username}")
                     s.sendall(CLIENT_PEER_MESSAGE.encode())
-                    print(f"[SEND] Sent initial request: '{CLIENT_PEER_MESSAGE}'")
+                    time.sleep(0.2)  # Wait after sending request
+                    print(f"[SEND] Sent initial request '{CLIENT_PEER_MESSAGE}' to {recipient_username}")
                     
-                    # Wait for ready signal
-                    ready_signal = s.recv(1024).decode().strip()
-                    if ready_signal != BUFFER:
-                        raise Exception(f"Expected {BUFFER}, got: '{ready_signal}'")
-                    print(f"[SEND] Got ready signal: '{ready_signal}'")
+                    # Wait for ready signal with timeout
+                    try:
+                        ready_signal = s.recv(1024).decode().strip()
+                        if ready_signal != BUFFER:
+                            raise Exception(f"Expected {BUFFER}, got: '{ready_signal}'")
+                        time.sleep(0.2)  # Wait after receiving ready signal
+                        print(f"[SEND] Got correct ready signal from {recipient_username}: '{ready_signal}'")
+                    except Exception as e:
+                        print(f"[SEND] Failed to get valid ready signal from {recipient_username}: {str(e)}")
+                        return False
                     
-                    # Send encrypted message
-                    msg_with_end = encrypted_message + b"END_OF_MESSAGE"
-                    s.sendall(msg_with_end)
-                    print("[SEND] Sent encrypted message")
+                    # Send encrypted message in chunks
+                    try:
+                        msg_with_end = encrypted_message + b"END_OF_MESSAGE"
+                        chunk_size = 8192
+                        for i in range(0, len(msg_with_end), chunk_size):
+                            chunk = msg_with_end[i:i + chunk_size]
+                            s.sendall(chunk)
+                            time.sleep(0.2)  # Wait between chunks
+                            print(f"[SEND] Sent chunk {i//chunk_size + 1} of size {len(chunk)} to {recipient_username}")
+                        time.sleep(0.5)  # Longer wait after sending all chunks
+                        print(f"[SEND] Completed sending message to {recipient_username}")
+                    except Exception as e:
+                        print(f"[SEND] Failed to send message chunks to {recipient_username}: {str(e)}")
+                        return False
                     
                     # Wait for ready for ack signal
-                    ack_ready = s.recv(1024).decode().strip()
-                    if ack_ready != "READY_FOR_ACK":
-                        raise Exception(f"Expected READY_FOR_ACK, got: '{ack_ready}'")
-                    print(f"[SEND] Got ready for ack signal: '{ack_ready}'")
-                    
-                    # Receive acknowledgment
-                    print("[SEND] Waiting for acknowledgment...")
-                    ack_data = b""
-                    while True:
-                        try:
-                            chunk = s.recv(1024)
-                            if not chunk:
-                                print("[SEND] Connection closed while receiving ack")
-                                return False
-                            ack_data += chunk
-                            if b"END_OF_ACK" in ack_data:
-                                ack_data = ack_data[:ack_data.index(b"END_OF_ACK")]
-                                break
-                        except socket.timeout:
-                            print("[SEND] Timeout while receiving acknowledgment")
-                            return False
-                    
-                    if not ack_data:
-                        print("[SEND] Received empty acknowledgment")
-                        return False
-                    
-                    # Process acknowledgment
                     try:
-                        ack_json = ack_data.decode()
-                        print(f"[SEND] Received ack data: '{ack_json}'")
-                        
-                        ack = json.loads(ack_json)
-                        if ack.get('type') == 'ack' and ack.get('message_id') == message.message_id:
-                            print("[SEND] Valid acknowledgment received")
-                            return True
-                        
-                        print(f"[SEND] Invalid ack - Type: {ack.get('type')}, Expected ID: {message.message_id}, Got ID: {ack.get('message_id')}")
-                        return False
-                        
-                    except json.JSONDecodeError as e:
-                        print(f"[SEND] Failed to parse ack JSON: {str(e)}")
-                        return False
+                        ack_ready = s.recv(1024).decode().strip()
+                        if ack_ready != "READY_FOR_ACK":
+                            raise Exception(f"Expected READY_FOR_ACK, got: '{ack_ready}'")
+                        time.sleep(0.2)  # Wait after receiving ready for ack
+                        print(f"[SEND] Got ready for ack signal from {recipient_username}")
                     except Exception as e:
-                        print(f"[SEND] Error processing ack: {str(e)}")
+                        print(f"[SEND] Failed to get ready for ack from {recipient_username}: {str(e)}")
                         return False
                     
+                    # Receive acknowledgment with timeout
+                    print(f"[SEND] Waiting for acknowledgment from {recipient_username}...")
+                    try:
+                        ack_data = b""
+                        start_time = time.time()
+                        while True:
+                            if time.time() - start_time > 30:  # 30 second total timeout
+                                print(f"[SEND] Total timeout waiting for ack from {recipient_username}")
+                                return False
+                                
+                            try:
+                                chunk = s.recv(1024)
+                                if not chunk:
+                                    if ack_data:  # If we have some data, wait a bit more
+                                        time.sleep(0.5)
+                                        continue
+                                    print(f"[SEND] Connection closed by {recipient_username} while receiving ack")
+                                    return False
+                                ack_data += chunk
+                                if b"END_OF_ACK" in ack_data:
+                                    ack_data = ack_data[:ack_data.index(b"END_OF_ACK")]
+                                    time.sleep(0.2)  # Wait after receiving complete ack
+                                    break
+                            except socket.timeout:
+                                if ack_data:  # If we have some data, wait a bit more
+                                    time.sleep(0.5)
+                                continue  # Keep trying until total timeout
+                        
+                        if not ack_data:
+                            print(f"[SEND] Received empty acknowledgment from {recipient_username}")
+                            return False
+                        
+                        # Process acknowledgment
+                        try:
+                            ack_json = ack_data.decode()
+                            print(f"[SEND] Received ack data from {recipient_username}: '{ack_json}'")
+                            
+                            ack = json.loads(ack_json)
+                            if ack.get('type') == 'ack' and ack.get('message_id') == message.message_id:
+                                print(f"[SEND] Valid acknowledgment received from {recipient_username}")
+                                time.sleep(0.5)  # Wait after successful ack
+                                return True
+                            
+                            print(f"[SEND] Invalid ack from {recipient_username} - Type: {ack.get('type')}, Expected ID: {message.message_id}, Got ID: {ack.get('message_id')}")
+                            return False
+                        except json.JSONDecodeError as e:
+                            print(f"[SEND] Failed to parse ack JSON from {recipient_username}: {str(e)}")
+                            return False
+                    except Exception as e:
+                        print(f"[SEND] Error receiving ack from {recipient_username}: {str(e)}")
+                        return False
+
             except Exception as e:
-                print(f"[SEND] Error in message sending: {str(e)}")
+                print(f"[SEND] Error in message sending to {recipient_username}: {str(e)}")
                 return False
 
         except Exception as e:
-            print(f"[SEND] Unexpected error: {str(e)}")
+            print(f"[SEND] Unexpected error sending to {recipient_username}: {str(e)}")
             return False
 
     def update_peer(self, username: str, ip: str, port: int, public_key: str):

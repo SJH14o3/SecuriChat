@@ -123,7 +123,7 @@ def ping_users():
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.settimeout(100)
-                    s.connect((user_.ip_address, user_.port))
+                    s.connect((user_.ip_address, int(user_.port)))
                     s.send(SERVER_PING.encode())
                     response = s.recv(1024).decode()
                     if response != CLIENT_IS_ONLINE:
