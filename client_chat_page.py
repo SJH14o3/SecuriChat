@@ -1,11 +1,12 @@
 import json
+import random
 import socket
 import threading
 import time
 from typing import List, Dict
 import sys
 
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QColor, QPainter
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QListWidget, \
     QSizePolicy, QScrollArea, QListWidgetItem
 from PySide6.QtCore import Qt, QSize, Signal
@@ -54,33 +55,76 @@ def fetch_online_users() -> List[OnlineUser]:
             
     return online_users
 
-class OtherUsersBox(QWidget):
-    def __init__(self, image_bytes: bytes, display_name, subtitle, latest_message_timestamp: Timestamp, is_online: bool, username: str, window: QListWidget):
+class OtherUsersBox():
+    def __init__(self, image_bytes: bytes, display_name, subtitle, latest_message_timestamp: Timestamp, is_online: bool, username: str, has_unread: bool):
         super().__init__()
-        main_layout = QHBoxLayout()
-        text_layout = QVBoxLayout()
         self.latest_message_timestamp = latest_message_timestamp
         self.is_online = is_online
         self.username = username
         self.display_name = display_name
-        # Image setup
-        self.image_label = QLabel()
-        self.set_image(image_bytes)
-        self.set_highlight()
+        self.image_bytes = image_bytes
+        self.subtitle = subtitle
+        self.has_unread = has_unread
+
+class CircleIndicator(QWidget):
+    def __init__(self, diameter=10, color=Qt.red, parent=None):
+        super().__init__(parent)
+        self.diameter = diameter
+        self.color = QColor(color)
+        self.setFixedSize(QSize(diameter, diameter))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(self.color)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(0, 0, self.diameter, self.diameter)
+
+class Morph(QWidget):
+    def __init__(self, image_bytes: bytes, display_name, subtitle, latest_message_timestamp: Timestamp, is_online: bool, username: str, has_unread_messages):
+        super().__init__()
+        main_layout = QHBoxLayout()
+        text_layout = QVBoxLayout()
+        signs_layout = QVBoxLayout()
+        signs_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.latest_message_timestamp = latest_message_timestamp
+        self.is_online = is_online
+        self.username = username
+        self.display_name = display_name
+        self.has_unread_messages = has_unread_messages
+
         # Title
-        self.title_label = QLabel(f"{display_name}")
+        self.title_label = QLabel(f"<b>{display_name}</b>")
         self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         # Subtitle
         self.subtitle_label = QLabel()
         self.set_subtitle(subtitle)
-        # Layouts
+
+        # Image
+        self.image_label = QLabel()
+        self.set_image(image_bytes)
+
+        # Add indicators if needed
+        if self.is_online:
+            online_circle = CircleIndicator(diameter=10, color=Qt.green)
+            signs_layout.addWidget(online_circle)
+
+        if self.has_unread_messages:
+            unread_circle = CircleIndicator(diameter=10, color=Qt.red)
+            signs_layout.addWidget(unread_circle)
+
+        # Layout composition
         text_layout.addWidget(self.title_label)
         text_layout.addWidget(self.subtitle_label)
+
         main_layout.addWidget(self.image_label)
         main_layout.addLayout(text_layout)
+        main_layout.addStretch()  # Push signs_layout to the right
+        main_layout.addLayout(signs_layout)
+
         self.setLayout(main_layout)
-        self.setParent(window)
-        print(f"my parent is {self.parent()}")
 
     def set_image(self, image_bytes: bytes):
         byte_array = QByteArray(image_bytes)
@@ -115,16 +159,6 @@ class OtherUsersBox(QWidget):
         self.subtitle_label.setMinimumWidth(0)
         self.subtitle_label.setMaximumHeight(20)
 
-    def set_highlight(self):
-        if self.is_online:
-            self.image_label.setStyleSheet("""
-                    QLabel {
-                        border: 4px solid red;
-                        border-radius: 4px;
-                    }
-                """)
-        else:
-            self.image_label.setStyleSheet("")
 
 class ClientChatMenu(QWidget):
     refresh_ui_signal = Signal()
@@ -244,10 +278,8 @@ class ClientChatMenu(QWidget):
             time.sleep(5)  # Update every 5 seconds
 
     def refresh_user_list_ui(self):
-        # Remove all widgets from layout
         self.users_list_widget.clear()
 
-        # Sort and re-add user boxes
         sorted_boxes = sorted(
             self.other_users_list.values(),
             key=lambda box: box.latest_message_timestamp.timestamp,
@@ -256,11 +288,10 @@ class ClientChatMenu(QWidget):
 
         for box in sorted_boxes:
             list_item = QListWidgetItem()
-            list_item.setSizeHint(box.sizeHint())
-            box.setParent(self.users_list_widget)
-
+            mo = Morph(box.image_bytes, box.display_name, box.subtitle, box.latest_message_timestamp, box.is_online, box.username, box.has_unread)
+            list_item.setSizeHint(mo.sizeHint())
             self.users_list_widget.addItem(list_item)
-            self.users_list_widget.setItemWidget(list_item, box)
+            self.users_list_widget.setItemWidget(list_item, mo)
 
     def get_other_users_info(self):
         latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())
@@ -289,10 +320,15 @@ class ClientChatMenu(QWidget):
                     s.recv(1024) # server okay
                     s.send(message.recipient_username.encode())
                     profile_image_bytes = receive_image_bytes_from_socket(s)
-            self.other_users_list[message.recipient_username] = OtherUsersBox(profile_image_bytes, display_name, message.message.decode(), message.timestamp, is_online, message.recipient_username, self.users_list_widget)
+            has_unread: bool
+            if message.is_income:
+                has_unread = not message.is_read
+            else:
+                has_unread = True
+            self.other_users_list[message.recipient_username] = OtherUsersBox(profile_image_bytes, display_name, message.message.decode(), message.timestamp, is_online, message.recipient_username, has_unread)
 
         for user in temp_online_dict.values():
-            self.other_users_list[user.username] = OtherUsersBox(user.profile_picture, user.name, "".encode(), Timestamp.get_now(), True, user.username, self.users_list_widget)
+            self.other_users_list[user.username] = OtherUsersBox(user.profile_picture, user.name, "", Timestamp.get_now(), True, user.username, False)
 
     def close_threads(self):
         """Clean up threads and connections"""
