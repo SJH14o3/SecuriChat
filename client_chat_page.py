@@ -6,6 +6,7 @@ from typing import List
 import sys
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QListWidget
 from PySide6.QtCore import Qt
+import local_database
 from log import Log
 from onlineuser import OnlineUser
 from statics import *
@@ -56,6 +57,7 @@ class ClientChatMenu(QWidget):
         self.log = log
         self.isRunning = True
         self.selected_user = None
+        self.local_database = local_database.LocalDatabase(online_user.username)
         
         # Initialize P2P connection
         self.peer_connection = PeerConnection(
@@ -66,7 +68,6 @@ class ClientChatMenu(QWidget):
         )
         # Register message handlers
         self.peer_connection.register_message_handler('text', self.handle_text_message)
-        
         self.setup_ui()
         self.start_online_users_updater()
 
@@ -171,3 +172,8 @@ class ClientChatMenu(QWidget):
         with open(f"users/{self.online_user.username}/private_key.key", "r") as private_key_file:
             key = private_key_file.read()
         return key
+
+    # extracts aes key of user
+    def get_aes_key(self):
+        with open(f"users/{self.online_user.username}/aes_key.key", "rb") as f:
+            return f.read()

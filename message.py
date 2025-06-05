@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding as asymmetric
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import os
+from timestamp import Timestamp
 
 # Constants
 MAX_MESSAGE_AGE = 300  # 5 minutes in seconds
@@ -327,3 +328,14 @@ def create_message_ack(message_id: str, recipient_id: str) -> Dict:
         'recipient_id': recipient_id,
         'timestamp': time.time()
     }
+
+# a class to hold plain messages.
+class LocalMessage:
+    def __init__(self, message_id: int, recipient_username: str, message_type, is_income: bool, message, timestamp: Timestamp, is_read: bool):
+        self.message_id = message_id
+        self.recipient_username = recipient_username
+        self.message_type = message_type
+        self.is_income = is_income
+        self.message = message
+        self.timestamp = timestamp
+        self.is_read = is_read
