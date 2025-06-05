@@ -2,16 +2,21 @@ import json
 import socket
 import threading
 import time
-from typing import List
+from typing import List, Dict
 import sys
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QListWidget
-from PySide6.QtCore import Qt
+
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QListWidget, \
+    QSizePolicy, QScrollArea, QListWidgetItem
+from PySide6.QtCore import Qt, QSize, Signal
 import local_database
 from log import Log
 from onlineuser import OnlineUser
 from statics import *
 from server import PORT
 from peer_connection import PeerConnection
+from timestamp import Timestamp
+
 
 def receive_image_bytes_from_socket(conn: socket.socket) -> bytes:
     length_bytes = conn.recv(4)
@@ -49,7 +54,80 @@ def fetch_online_users() -> List[OnlineUser]:
             
     return online_users
 
+class OtherUsersBox(QWidget):
+    def __init__(self, image_bytes: bytes, display_name, subtitle, latest_message_timestamp: Timestamp, is_online: bool, username: str, window: QListWidget):
+        super().__init__()
+        main_layout = QHBoxLayout()
+        text_layout = QVBoxLayout()
+        self.latest_message_timestamp = latest_message_timestamp
+        self.is_online = is_online
+        self.username = username
+        self.display_name = display_name
+        # Image setup
+        self.image_label = QLabel()
+        self.set_image(image_bytes)
+        self.set_highlight()
+        # Title
+        self.title_label = QLabel(f"{display_name}")
+        self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Subtitle
+        self.subtitle_label = QLabel()
+        self.set_subtitle(subtitle)
+        # Layouts
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.subtitle_label)
+        main_layout.addWidget(self.image_label)
+        main_layout.addLayout(text_layout)
+        self.setLayout(main_layout)
+        self.setParent(window)
+        print(f"my parent is {self.parent()}")
+
+    def set_image(self, image_bytes: bytes):
+        byte_array = QByteArray(image_bytes)
+        buffer = QBuffer(byte_array)
+        buffer.open(QIODevice.ReadOnly)
+
+        image = QPixmap()
+        image.loadFromData(buffer.data())
+
+        if not image.isNull():
+            image = image.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        else:
+            image = QPixmap(64, 64)
+            image.fill(Qt.gray)
+
+        self.image_label.setPixmap(image)
+        self.image_label.setFixedSize(QSize(64, 64))
+
+    def set_subtitle(self, subtitle: str):
+        metrics = self.subtitle_label.fontMetrics()
+        elided_text = metrics.elidedText(subtitle, Qt.ElideRight, 400)  # Width in pixels
+        self.subtitle_label.setText(elided_text)
+        self.subtitle_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.subtitle_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.subtitle_label.setStyleSheet("""
+            QLabel {
+                color: gray;
+                qproperty-alignment: AlignLeft;
+            }
+        """)
+        self.subtitle_label.setWordWrap(False)
+        self.subtitle_label.setMinimumWidth(0)
+        self.subtitle_label.setMaximumHeight(20)
+
+    def set_highlight(self):
+        if self.is_online:
+            self.image_label.setStyleSheet("""
+                    QLabel {
+                        border: 4px solid red;
+                        border-radius: 4px;
+                    }
+                """)
+        else:
+            self.image_label.setStyleSheet("")
+
 class ClientChatMenu(QWidget):
+    refresh_ui_signal = Signal()
     def __init__(self, online_user: OnlineUser, receiver_socket, log: Log):
         super().__init__()
         self.online_user = online_user
@@ -58,50 +136,53 @@ class ClientChatMenu(QWidget):
         self.isRunning = True
         self.selected_user = None
         self.local_database = local_database.LocalDatabase(online_user.username)
-        
+        self.latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())
+        self.refresh_ui_signal.connect(self.refresh_user_list_ui)
         # Initialize P2P connection
         self.peer_connection = PeerConnection(
             username=online_user.username,
             private_key=self.get_private_key(),
             log=log,
             receiver_socket=self.receiver_socket,
+            database=self.local_database,
+            aes_key=self.get_aes_key()
         )
         # Register message handlers
         self.peer_connection.register_message_handler('text', self.handle_text_message)
+
+        self.chat_display = QTextEdit()
+        self.message_input = QTextEdit()
+        self.send_button = QPushButton("Send")
+        self.users_layout = QVBoxLayout()
+        self.users_list_widget = QListWidget()
+
         self.setup_ui()
+        self.other_users_list: Dict[str, OtherUsersBox] = {}
+        self.other_online_users_list: Dict[str, OnlineUser] = {}
+        self.updater_thread = threading.Thread(target=self.update_online_users_periodically)
         self.start_online_users_updater()
 
     def setup_ui(self):
-        self.setWindowTitle(f"SecuriChat - {self.online_user.name}")
-        
-        # Main layout
         layout = QHBoxLayout()
-        
-        # Online users section
-        users_layout = QVBoxLayout()
-        users_label = QLabel("Online Users")
-        self.users_list = QListWidget()
-        self.users_list.itemClicked.connect(self.user_selected)
-        users_layout.addWidget(users_label)
-        users_layout.addWidget(self.users_list)
-        
-        # Chat section
+
+        # === LEFT SIDE: User list (chat contacts) ===
+        self.users_layout.addWidget(self.users_list_widget)
+
+        # self.users_list_widget.itemSelectionChanged.connect() # TODO
+
+        # === RIGHT SIDE: Chat area ===
         chat_layout = QVBoxLayout()
-        self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
-        self.message_input = QTextEdit()
         self.message_input.setMaximumHeight(100)
-        self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send_message)
-        
+
         chat_layout.addWidget(self.chat_display)
         chat_layout.addWidget(self.message_input)
         chat_layout.addWidget(self.send_button)
-        
-        # Add layouts to main layout
-        layout.addLayout(users_layout, 1)
+
+        layout.addLayout(self.users_layout, 1)
         layout.addLayout(chat_layout, 2)
-        
+
         self.setLayout(layout)
 
     def user_selected(self, item):
@@ -132,10 +213,10 @@ class ClientChatMenu(QWidget):
 
     def update_online_users(self, online_users: list):
         """Update the list of online users and their P2P connection info"""
-        self.users_list.clear()
+        self.other_online_users_list.clear()
         for user in online_users:
             if user.username != self.online_user.username:
-                self.users_list.addItem(user.username)
+                self.other_online_users_list[user.username] = user
                 # Update peer connection info with public key
                 self.peer_connection.update_peer(
                     username=user.username,
@@ -146,7 +227,6 @@ class ClientChatMenu(QWidget):
 
     def start_online_users_updater(self):
         """Start thread to update online users list"""
-        self.updater_thread = threading.Thread(target=self.update_online_users_periodically)
         self.updater_thread.daemon = True
         self.updater_thread.start()
 
@@ -154,11 +234,65 @@ class ClientChatMenu(QWidget):
         while self.isRunning:
             try:
                 # Get online users from server
-                online_users = fetch_online_users()  # You'll need to implement this
+                online_users = fetch_online_users()
                 self.update_online_users(online_users)
+                self.get_other_users_info()
+                self.refresh_ui_signal.emit()
             except Exception as e:
                 self.log.append_log(f"Error updating online users: {str(e)}")
+                print(e)
             time.sleep(5)  # Update every 5 seconds
+
+    def refresh_user_list_ui(self):
+        # Remove all widgets from layout
+        self.users_list_widget.clear()
+
+        # Sort and re-add user boxes
+        sorted_boxes = sorted(
+            self.other_users_list.values(),
+            key=lambda box: box.latest_message_timestamp.timestamp,
+            reverse=True
+        )
+
+        for box in sorted_boxes:
+            list_item = QListWidgetItem()
+            list_item.setSizeHint(box.sizeHint())
+            box.setParent(self.users_list_widget)
+
+            self.users_list_widget.addItem(list_item)
+            self.users_list_widget.setItemWidget(list_item, box)
+
+    def get_other_users_info(self):
+        latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())
+        self.other_users_list.clear()
+        temp_online_dict: Dict[str, OnlineUser] = self.other_online_users_list.copy()
+        for message in latest_messages:
+            # image profile, user display  name, online
+            is_online = False
+            profile_image_bytes = b''
+            display_name = ""
+            if message.recipient_username in temp_online_dict:
+                profile_image_bytes = temp_online_dict[message.recipient_username].profile_picture
+                display_name = temp_online_dict[message.recipient_username].name
+                del temp_online_dict[message.recipient_username]
+                is_online = True
+            else:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect(('127.0.0.1', PORT))
+                    s.send(CLIENT_GET_DISPLAY_NAME.encode())
+                    s.recv(1024).decode() # server okay
+                    s.send(message.recipient_username.encode())
+                    display_name = s.recv(1024).decode()
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect(('127.0.0.1', PORT))
+                    s.send(CLIENT_GET_PROFILE_PICTURE.encode())
+                    s.recv(1024) # server okay
+                    s.send(message.recipient_username.encode())
+                    profile_image_bytes = receive_image_bytes_from_socket(s)
+            self.other_users_list[message.recipient_username] = OtherUsersBox(profile_image_bytes, display_name, message.message.decode(), message.timestamp, is_online, message.recipient_username, self.users_list_widget)
+
+        for user in temp_online_dict.values():
+            self.other_users_list[user.username] = OtherUsersBox(user.profile_picture, user.name, "".encode(), Timestamp.get_now(), True, user.username, self.users_list_widget)
 
     def close_threads(self):
         """Clean up threads and connections"""

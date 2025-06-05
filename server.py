@@ -81,13 +81,28 @@ def login_request(conn: socket, addr):
         conn.sendall(online_user.to_json().encode())
         conn.recv(1024).decode() # user sent buffer
         send_image(conn, online_user.profile_picture)
-        time.sleep(1) # a one-second window for client to be able to response
+        time.sleep(1) # a one-second window for client to be able to response to server ping
         with online_users_lock:
             online_users.append(online_user)
     else:
         s = convert_to_request_name(db_result)
         invalid = "invalid"
         log.append_log(f"user {username} successfully logged in with address: {addr[0]}:{addr[1]}, error: {db_result if invalid == s else s}")
+
+# only returns a user display name, used when only knowing a username but not the actual display name
+def handle_get_display_name_request(conn: socket, addr):
+    conn.send(SERVER_OK.encode())
+    requested_user = conn.recv(1024).decode()
+    result = server_database.get_user_display_name(requested_user)
+    conn.send(result.encode())
+    log.append_log(f"successfully handled a user's display name request from address {addr[0]}:{addr[1]}")
+
+def handle_get_profile_picture_request(conn, addr):
+    conn.send(SERVER_OK.encode())
+    requested_user = conn.recv(1024).decode()
+    image_bytes = server_database.get_user_profile_picture(requested_user)
+    send_image(conn, image_bytes)
+    log.append_log(f"successfully handled a user's get profile picture request from address {addr[0]}:{addr[1]}")
 
 # resetting log folder
 def reset_log_folder():
@@ -156,6 +171,10 @@ def handle_client_request(conn: socket.socket, addr):
                 for user_ in online_users:
                     if user_.address_is_equal(addr[0], addr[1]):
                         online_users.remove(user_)
+        elif request == CLIENT_GET_DISPLAY_NAME:
+            handle_get_display_name_request(conn, addr)
+        elif request == CLIENT_GET_PROFILE_PICTURE:
+            handle_get_profile_picture_request(conn, addr)
         else:
             log.append_log(f"unknown request: {request} from {addr}, connection is closed")
         conn.close()

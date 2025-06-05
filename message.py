@@ -542,7 +542,7 @@ def create_message_ack(message_id: str, recipient_id: str) -> Dict:
 
 # a class to hold plain messages.
 class LocalMessage:
-    def __init__(self, message_id: int, recipient_username: str, message_type, is_income: bool, message, timestamp: Timestamp, is_read: bool):
+    def __init__(self, message_id: int, recipient_username: str, message_type: int, is_income: bool, message, timestamp: Timestamp, is_read: bool):
         self.message_id = message_id
         self.recipient_username = recipient_username
         self.message_type = message_type

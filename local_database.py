@@ -80,12 +80,13 @@ class LocalDatabase:
             (
                 message.recipient_username,
                 message.message_type,
-                0 if message.is_income else 1,
+                1 if message.is_income else 0,
                 ciphertext,
                 Timestamp.get_now().timestamp,
                 nonce,
                 encrypted_tag,
-                0
+                1 if message.is_read else 0,
+
             ))
             conn.commit()
 
@@ -118,8 +119,79 @@ class LocalDatabase:
                 message_id=message_id,
                 recipient_username=row[COLUMN_OTHER_USERNAME],
                 message_type=row[COLUMN_MESSAGE_TYPE],
-                is_income=(row[COLUMN_iS_INCOME] == 0),
+                is_income=(row[COLUMN_iS_INCOME] == 1),
                 message=decrypted_bytes,
                 timestamp=Timestamp(row[COLUMN_TIMESTAMP]),
                 is_read=(row[COLUMN_IS_READ] == 1)
             )
+
+    def get_latest_messages_per_user(self, aes_key: bytes) -> list[LocalMessage]:
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Subquery to get the latest message ID per user
+            cursor.execute(f"""
+                SELECT * FROM {TABLE_MESSAGES}
+                WHERE {COLUMN_ID} IN (
+                    SELECT MAX({COLUMN_ID}) FROM {TABLE_MESSAGES}
+                    GROUP BY {COLUMN_OTHER_USERNAME}
+                )
+                ORDER BY {COLUMN_ID} DESC
+            """)
+
+            rows = cursor.fetchall()
+            messages = []
+
+            for row in rows:
+                decrypted_bytes = decrypt_message(
+                    row[COLUMN_MESSAGE],
+                    aes_key,
+                    row[COLUMN_NONCE],
+                    row[COLUMN_TAG]
+                )
+
+                message = LocalMessage(
+                    message_id=row[COLUMN_ID],
+                    recipient_username=row[COLUMN_OTHER_USERNAME],
+                    message_type=row[COLUMN_MESSAGE_TYPE],
+                    is_income=(row[COLUMN_iS_INCOME] == 1),
+                    message=decrypted_bytes,
+                    timestamp=Timestamp(row[COLUMN_TIMESTAMP]),
+                    is_read=(row[COLUMN_IS_READ] == 1)
+                )
+
+                messages.append(message)
+
+        return messages
+
+    def get_a_user_all_messages(self, other_username: str, aes_key: bytes) -> list[LocalMessage]:
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                    SELECT * FROM {TABLE_MESSAGES}
+                    WHERE {COLUMN_OTHER_USERNAME} = {other_username}
+                    ORDER BY {COLUMN_ID} DESC
+                """)
+            out = []
+            rows = cursor.fetchall()
+            for row in rows:
+                decrypted_bytes = decrypt_message(
+                    row[COLUMN_MESSAGE],
+                    aes_key,
+                    row[COLUMN_NONCE],
+                    row[COLUMN_TAG]
+                )
+
+                message = LocalMessage(
+                    message_id=row[COLUMN_ID],
+                    recipient_username=row[COLUMN_OTHER_USERNAME],
+                    message_type=row[COLUMN_MESSAGE_TYPE],
+                    is_income=(row[COLUMN_iS_INCOME] == 1),
+                    message=decrypted_bytes,
+                    timestamp=Timestamp(row[COLUMN_TIMESTAMP]),
+                    is_read=(row[COLUMN_IS_READ] == 1)
+                )
+                out.append(message)
+            return out

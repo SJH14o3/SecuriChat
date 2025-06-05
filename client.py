@@ -60,7 +60,7 @@ def generate_public_and_private_keys():
 
     return private_pem, public_pem
 
-# generates and stores AES key for a new signed in user
+# generates and stores AES key for a new signed-in user
 def generate_and_store_aes_key(username):
     aes_key = os.urandom(32)  # 256-bit key
     os.makedirs(f"users/{username}", exist_ok=True)
@@ -423,6 +423,8 @@ class MainWindow(QStackedWidget):
     def switch_to_logged_in_client(self, online_user: OnlineUser):
         global receiver_socket, log
         self.logged_in = True
+        self.setWindowTitle(f"SecuriChat - {online_user.username}")
+        self.setFixedSize(1000, 800)
         self.chat_page = ClientChatMenu(online_user, receiver_socket, log)
         self.addWidget(self.chat_page)
         self.setCurrentWidget(self.chat_page)

@@ -102,6 +102,19 @@ def get_user(username) -> User | None:
         last_seen = Timestamp(row[3])
         return User(username, display_name, public_key, profile_picture, last_seen)
 
+def get_user_display_name(username) -> str:
+    with sqlite3.connect(USERS_DB) as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT {COLUMN_DISPLAY_NAME} FROM {USERS} WHERE {COLUMN_USERNAME} = ?", (username,))
+        row = cursor.fetchone()
+        return row[0]
+
+def get_user_profile_picture(username) -> bytes:
+    with sqlite3.connect(USERS_DB) as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT {COLUMN_PROFILE_PICTURE} FROM {USERS} WHERE {COLUMN_USERNAME} = ?", (username,))
+        row = cursor.fetchone()
+        return row[0]
 
 # every time when server is run, this function's called. it will create database if it doesn't exist
 def create_users_table_if_not_exists():
