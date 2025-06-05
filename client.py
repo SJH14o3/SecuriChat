@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, Q
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from client_chat_page import ClientChatMenu
+import local_database
 
 USERNAME_REGEX = r"^[a-zA-Z0-9_.-]{3,20}$"
 PASSWORD_REGEX = r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*?&]{6,}$"
@@ -58,6 +59,13 @@ def generate_public_and_private_keys():
     ).decode('utf-8')
 
     return private_pem, public_pem
+
+# generates and stores AES key for a new signed in user
+def generate_and_store_aes_key(username):
+    aes_key = os.urandom(32)  # 256-bit key
+    os.makedirs(f"users/{username}", exist_ok=True)
+    with open(f"users/{username}/aes_key.key", "wb") as f:
+        f.write(aes_key)
 
 # trying to log in user
 def log_in(username, password, main_window):
@@ -141,6 +149,8 @@ def sign_up(username: str, password: str, email:str, profile_image: bytes, displ
         port = local_port
         log = Log(f"{port}")
         store_key(private_key_bytes, username)
+        generate_and_store_aes_key(username)
+        local_database.create_database(username)
         online_user = OnlineUser(ip_address, port, display_name, username,public_key_bytes, profile_image, timestamp.Timestamp.get_now())
         main_window.switch_to_logged_in_client(online_user)
     socket_connection.close()
