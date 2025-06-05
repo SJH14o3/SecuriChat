@@ -135,11 +135,12 @@ class ClientChatMenu(QWidget):
         for user in online_users:
             if user.username != self.online_user.username:
                 self.users_list.addItem(user.username)
-                # Update peer connection info
+                # Update peer connection info with public key
                 self.peer_connection.update_peer(
                     username=user.username,
                     ip=user.ip_address,
-                    port=user.port
+                    port=user.port,
+                    public_key=user.public_key
                 )
 
     def start_online_users_updater(self):

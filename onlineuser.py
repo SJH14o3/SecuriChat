@@ -8,7 +8,7 @@ class OnlineUser(User):
                  last_seen: Timestamp):
         super().__init__(username, name, public_key, profile_picture, last_seen)
         self.ip_address = ip_address
-        self.port = port
+        self.port = str(port)  # Convert port to string
         self.name = name
         self.username = username
         self.public_key = public_key
@@ -26,7 +26,7 @@ class OnlineUser(User):
         })
     # used to identify user only based on their address
     def address_is_equal(self, port: int, ip_address):
-        return ip_address == self.ip_address and port == self.port
+        return ip_address == self.ip_address and str(port) == self.port
 
     def __str__(self):
         return f"user: {self.username}, name: {self.name}, ip_address: {self.ip_address}, port: {self.port}"

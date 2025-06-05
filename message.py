@@ -27,7 +27,7 @@ class MessageCorruptionError(MessageError):
     pass
 
 class OnionLayer:
-    def __init__(self, node_public_key: str, next_address: Tuple[str, int]):
+    def __init__(self, node_public_key: str, next_address: Tuple[str, str]):
         self.node_public_key = node_public_key
         self.next_address = next_address
         self.layer_id = str(uuid.uuid4())
@@ -44,7 +44,7 @@ class OnionMessage:
         self.chunks: List[str] = []  # For large messages
         self.total_chunks = 0
         
-    def add_layer(self, node_public_key: str, next_address: Tuple[str, int]):
+    def add_layer(self, node_public_key: str, next_address: Tuple[str, str]):
         """Add a new layer to the onion routing path"""
         self.layers.append(OnionLayer(node_public_key, next_address))
 
@@ -83,11 +83,11 @@ def validate_message(message_dict: Dict) -> bool:
         
     return True
 
-def create_onion_route(online_users: List[Dict], recipient_address: Tuple[str, int], 
+def create_onion_route(online_users: List[Dict], recipient_address: Tuple[str, str], 
                       num_hops: int = 3) -> List[OnionLayer]:
     """Create a random route through the network for onion routing"""
     available_nodes = [user for user in online_users 
-                      if (user['ip_address'], user['port']) != recipient_address]
+                      if (user['ip_address'], str(user['port'])) != recipient_address]
     
     if len(available_nodes) < num_hops - 1:
         num_hops = len(available_nodes) + 1
@@ -102,59 +102,90 @@ def create_onion_route(online_users: List[Dict], recipient_address: Tuple[str, i
             node_public_key=node['public_key'],
             next_address=next_address
         ))
-        next_address = (node['ip_address'], node['port'])
+        next_address = (node['ip_address'], str(node['port']))
     
     return route
 
 def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
     """Encrypt a layer using the node's public key"""
     try:
-        public_key = serialization.load_pem_public_key(
-            public_key_pem.encode(),
-            backend=default_backend()
-        )
-        
-        # Generate a random AES key
-        aes_key = os.urandom(32)
-        iv = os.urandom(16)
-        
-        # Encrypt the AES key with RSA
-        encrypted_key = public_key.encrypt(
-            aes_key,
-            asymmetric_padding.OAEP(
-                mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
+        # Step 1: Load the public key
+        try:
+            print(f"Attempting to load public key. Key starts with: {public_key_pem[:50]}...")
+            public_key = serialization.load_pem_public_key(
+                public_key_pem.encode(),
+                backend=default_backend()
             )
-        )
-        
-        # Encrypt the data with AES
-        cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
-        encryptor = cipher.encryptor()
-        
-        # Add padding
-        padder = padding.PKCS7(128).padder()
-        padded_data = padder.update(data) + padder.finalize()
-        
-        # Encrypt
-        encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-        
-        # Add HMAC for integrity
-        h = hmac.HMAC(aes_key, hashes.SHA256())
-        h.update(encrypted_data)
-        mac = h.finalize()
-        
-        # Combine all components
-        return json.dumps({
-            'encrypted_key': encrypted_key.hex(),
-            'iv': iv.hex(),
-            'data': encrypted_data.hex(),
-            'mac': mac.hex()
-        }).encode()
-    except Exception as e:
-        raise MessageError(f"Encryption failed: {str(e)}")
+        except Exception as e:
+            raise MessageError(f"Failed to load public key: {str(e)}")
 
-def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, Tuple[str, int]]:
+        # Step 2: Generate AES key and IV
+        try:
+            aes_key = os.urandom(32)
+            iv = os.urandom(16)
+        except Exception as e:
+            raise MessageError(f"Failed to generate AES key or IV: {str(e)}")
+
+        # Step 3: Encrypt AES key with RSA
+        try:
+            encrypted_key = public_key.encrypt(
+                aes_key,
+                asymmetric_padding.OAEP(
+                    mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+        except Exception as e:
+            raise MessageError(f"Failed to encrypt AES key with RSA: {str(e)}")
+
+        # Step 4: Create AES cipher
+        try:
+            cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
+            encryptor = cipher.encryptor()
+        except Exception as e:
+            raise MessageError(f"Failed to create AES cipher: {str(e)}")
+
+        # Step 5: Add padding
+        try:
+            padder = padding.PKCS7(128).padder()
+            padded_data = padder.update(data) + padder.finalize()
+        except Exception as e:
+            raise MessageError(f"Failed to add padding: {str(e)}")
+
+        # Step 6: Encrypt data with AES
+        try:
+            encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+        except Exception as e:
+            raise MessageError(f"Failed to encrypt data with AES: {str(e)}")
+
+        # Step 7: Generate HMAC
+        try:
+            h = hmac.HMAC(aes_key, hashes.SHA256())
+            h.update(encrypted_data)
+            mac = h.finalize()
+        except Exception as e:
+            raise MessageError(f"Failed to generate HMAC: {str(e)}")
+
+        # Step 8: Format final output
+        try:
+            return json.dumps({
+                'encrypted_key': encrypted_key.hex(),
+                'iv': iv.hex(),
+                'data': encrypted_data.hex(),
+                'mac': mac.hex()
+            }).encode()
+        except Exception as e:
+            raise MessageError(f"Failed to format encrypted data: {str(e)}")
+
+    except MessageError as e:
+        # Re-raise MessageError with original message
+        raise
+    except Exception as e:
+        # Catch any other unexpected errors
+        raise MessageError(f"Unexpected encryption error: {str(e)}")
+
+def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, Tuple[str, str]]:
     """Decrypt a layer using the node's private key"""
     try:
         private_key = serialization.load_pem_private_key(
@@ -199,7 +230,7 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
         
         # Parse the decrypted data to get the next hop
         decrypted_dict = json.loads(data.decode())
-        next_address = (decrypted_dict['next_ip'], decrypted_dict['next_port'])
+        next_address = (str(decrypted_dict['next_ip']), str(decrypted_dict['next_port']))
         payload = decrypted_dict['payload'].encode()
         
         # Verify checksum if present
@@ -241,9 +272,10 @@ def create_onion_message(message: OnionMessage, sender_private_key: str) -> byte
         
         # Build the onion layers
         for layer in reversed(message.layers):
+            next_ip , next_port = layer.next_address
             layer_data = json.dumps({
-                'next_ip': layer.next_address[0],
-                'next_port': layer.next_address[1],
+                'next_ip': str(next_ip),
+                'next_port': next_port,
                 'layer_id': layer.layer_id,
                 'payload': payload_with_checksum.hex(),
                 'checksum': True
@@ -255,18 +287,17 @@ def create_onion_message(message: OnionMessage, sender_private_key: str) -> byte
     except Exception as e:
         raise MessageError(f"Failed to create onion message: {str(e)}")
 
-def process_onion_message(encrypted_data: bytes, node_private_key: str) -> Optional[Tuple[bytes, Tuple[str, int]]]:
+def process_onion_message(encrypted_data: bytes, node_private_key: str) -> Optional[Tuple[bytes, Tuple[str, str]]]:
     """Process an onion-encrypted message at a relay node with error handling"""
     retries = 0
     while retries < MAX_RETRIES:
         try:
             return decrypt_layer(encrypted_data, node_private_key)
         except MessageCorruptionError:
-            # Log corruption and request retransmission
             retries += 1
             if retries >= MAX_RETRIES:
                 raise MessageError("Maximum retries exceeded - message corrupted")
-            time.sleep(1)  # Wait before retry
+            time.sleep(1)
         except MessageError as e:
             raise MessageError(f"Failed to process message: {str(e)}")
 
