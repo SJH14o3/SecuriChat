@@ -169,11 +169,10 @@ class LocalDatabase:
         with sqlite3.connect(self.path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute(f"""
-                    SELECT * FROM {TABLE_MESSAGES}
-                    WHERE {COLUMN_OTHER_USERNAME} = {other_username}
-                    ORDER BY {COLUMN_ID} DESC
-                """)
+            cursor.execute(
+                f"SELECT * FROM {TABLE_MESSAGES} WHERE {COLUMN_OTHER_USERNAME} = ? ORDER BY {COLUMN_ID} DESC",
+                (other_username,)
+            )
             out = []
             rows = cursor.fetchall()
             for row in rows:
@@ -195,3 +194,33 @@ class LocalDatabase:
                 )
                 out.append(message)
             return out
+
+    def mark_messages_as_read_until_sent_or_read(self, other_username: str):
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT * FROM {TABLE_MESSAGES}
+                WHERE {COLUMN_OTHER_USERNAME} = ?
+                ORDER BY {COLUMN_ID} DESC
+            """, (other_username,))
+
+            messages_to_mark = []
+            for row in cursor.fetchall():
+                is_income = row[COLUMN_iS_INCOME] == 1
+                is_read = row[COLUMN_IS_READ] == 1
+
+                if not is_income:
+                    break  # Outgoing message: stop
+                if is_read:
+                    break  # Already read: stop
+
+                messages_to_mark.append(row[COLUMN_ID])
+
+            if messages_to_mark:
+                cursor.executemany(f"""
+                    UPDATE {TABLE_MESSAGES}
+                    SET {COLUMN_IS_READ} = 1
+                    WHERE {COLUMN_ID} = ?
+                """, [(msg_id,) for msg_id in messages_to_mark])
+                conn.commit()

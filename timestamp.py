@@ -29,7 +29,7 @@ class Timestamp:
         return self.timestamp // 10 ** 6
 
     def get_time_pretty(self, seconds: bool = False) -> str:
-        return f"{self.get_hour():02d}:{self.get_month():02d}:{self.get_second():02d}" if seconds else f"{self.get_hour():02d}:{self.get_month():02d}"
+        return f"{self.get_hour():02d}:{self.get_minute():02d}:{self.get_second():02d}" if seconds else f"{self.get_hour():02d}:{self.get_minute():02d}"
 
     # create instance base on input string
     @staticmethod

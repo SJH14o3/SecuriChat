@@ -8,8 +8,9 @@ import sys
 
 from PySide6.QtGui import QPixmap, QColor, QPainter
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QListWidget, \
-    QSizePolicy, QScrollArea, QListWidgetItem
+    QSizePolicy, QListWidgetItem, QMessageBox
 from PySide6.QtCore import Qt, QSize, Signal
+from win10toast import ToastNotifier
 import local_database
 from log import Log
 from onlineuser import OnlineUser
@@ -55,7 +56,7 @@ def fetch_online_users() -> List[OnlineUser]:
             
     return online_users
 
-class OtherUsersBox():
+class OtherUsersBox:
     def __init__(self, image_bytes: bytes, display_name, subtitle, latest_message_timestamp: Timestamp, is_online: bool, username: str, has_unread: bool):
         super().__init__()
         self.latest_message_timestamp = latest_message_timestamp
@@ -106,14 +107,20 @@ class Morph(QWidget):
         self.image_label = QLabel()
         self.set_image(image_bytes)
 
+        self.online_circle = CircleIndicator(diameter=10, color=Qt.green)
+        self.online_circle.hide()
+        signs_layout.addWidget(self.online_circle)
+
+        self.unread_circle = CircleIndicator(diameter=10, color=Qt.red)
+        self.unread_circle.hide()
+        signs_layout.addWidget(self.unread_circle)
+
         # Add indicators if needed
         if self.is_online:
-            online_circle = CircleIndicator(diameter=10, color=Qt.green)
-            signs_layout.addWidget(online_circle)
+            self.online_circle.show()
 
         if self.has_unread_messages:
-            unread_circle = CircleIndicator(diameter=10, color=Qt.red)
-            signs_layout.addWidget(unread_circle)
+            self.unread_circle.show()
 
         # Layout composition
         text_layout.addWidget(self.title_label)
@@ -159,9 +166,31 @@ class Morph(QWidget):
         self.subtitle_label.setMinimumWidth(0)
         self.subtitle_label.setMaximumHeight(20)
 
+class MessageBubble(QWidget):
+    def __init__(self, text: str, timestamp: str, is_income: bool):
+        super().__init__()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 5, 10, 5)
+
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setStyleSheet(
+            "background-color: #898989; border-radius: 10px; padding: 5px;" if is_income else
+            "background-color: #C17D1D; color: white; border-radius: 10px; padding: 5px;"
+        )
+
+        timestamp_label = QLabel(timestamp)
+        timestamp_label.setStyleSheet("font-size: 10px; color: gray;")
+        timestamp_label.setAlignment(Qt.AlignRight)
+
+        layout.addWidget(bubble)
+        layout.addWidget(timestamp_label)
+        layout.setAlignment(Qt.AlignLeft if is_income else Qt.AlignRight)
+        self.setLayout(layout)
 
 class ClientChatMenu(QWidget):
     refresh_ui_signal = Signal()
+    refresh_chat_signal = Signal()
     def __init__(self, online_user: OnlineUser, receiver_socket, log: Log):
         super().__init__()
         self.online_user = online_user
@@ -172,7 +201,8 @@ class ClientChatMenu(QWidget):
         self.local_database = local_database.LocalDatabase(online_user.username)
         self.latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())
         self.refresh_ui_signal.connect(self.refresh_user_list_ui)
-        # Initialize P2P connection
+        self.refresh_chat_signal.connect(self.load_chat_history)
+
         self.peer_connection = PeerConnection(
             username=online_user.username,
             private_key=self.get_private_key(),
@@ -181,10 +211,9 @@ class ClientChatMenu(QWidget):
             database=self.local_database,
             aes_key=self.get_aes_key()
         )
-        # Register message handlers
         self.peer_connection.register_message_handler('text', self.handle_text_message)
 
-        self.chat_display = QTextEdit()
+        self.chat_list_widget = QListWidget()
         self.message_input = QTextEdit()
         self.send_button = QPushButton("Send")
         self.users_layout = QVBoxLayout()
@@ -199,18 +228,18 @@ class ClientChatMenu(QWidget):
     def setup_ui(self):
         layout = QHBoxLayout()
 
-        # === LEFT SIDE: User list (chat contacts) ===
         self.users_layout.addWidget(self.users_list_widget)
+        self.users_list_widget.itemSelectionChanged.connect(self.on_user_selected)
 
-        # self.users_list_widget.itemSelectionChanged.connect() # TODO
-
-        # === RIGHT SIDE: Chat area ===
         chat_layout = QVBoxLayout()
-        self.chat_display.setReadOnly(True)
+        self.chat_list_widget.setSpacing(5)
+        self.chat_list_widget.setStyleSheet("border: none;")
         self.message_input.setMaximumHeight(100)
         self.send_button.clicked.connect(self.send_message)
+        self.message_input.setDisabled(True)
+        self.send_button.setDisabled(True)
 
-        chat_layout.addWidget(self.chat_display)
+        chat_layout.addWidget(self.chat_list_widget)
         chat_layout.addWidget(self.message_input)
         chat_layout.addWidget(self.send_button)
 
@@ -219,31 +248,83 @@ class ClientChatMenu(QWidget):
 
         self.setLayout(layout)
 
-    def user_selected(self, item):
-        self.selected_user = item.text()
-        self.chat_display.append(f"--- Started chat with {self.selected_user} ---")
+    def on_user_selected(self):
+        items = self.users_list_widget.selectedItems()
+        if not items:
+            return
+
+        item  = items[0]
+        widget = self.users_list_widget.itemWidget(item)
+        self.selected_user = widget.username
+        if widget.is_online:
+            self.message_input.setDisabled(False)
+            self.send_button.setDisabled(False)
+        else:
+            self.message_input.setDisabled(True)
+            self.send_button.setDisabled(True)
+
+        self.local_database.mark_messages_as_read_until_sent_or_read(widget.username)
+        self.load_chat_history()
+        self.chat_list_widget.scrollToBottom()
+
+    def load_chat_history(self):
+        scroll_position = self.chat_list_widget.verticalScrollBar().value()
+        self.chat_list_widget.clear()
+        if not self.selected_user:
+            self.chat_list_widget.addItem(QListWidgetItem("Select a chat to start messaging."))
+            self.message_input.setDisabled(True)
+            self.send_button.setDisabled(True)
+            return
+
+        messages = self.local_database.get_a_user_all_messages(self.selected_user, self.get_aes_key())
+        if not messages:
+            item = QListWidgetItem()
+            bubble = MessageBubble("Say hello to me!", "", True)
+            item.setSizeHint(bubble.sizeHint())
+            self.chat_list_widget.addItem(item)
+            self.chat_list_widget.setItemWidget(item, bubble)
+            return
+
+        for msg in reversed(messages):  # reverse to show oldest first
+            item = QListWidgetItem()
+            time_pretty = msg.timestamp.get_time_pretty(False)
+            bubble = MessageBubble(msg.message.decode(), time_pretty, msg.is_income)
+            item.setSizeHint(bubble.sizeHint())
+            self.chat_list_widget.addItem(item)
+            self.chat_list_widget.setItemWidget(item, bubble)
+        self.chat_list_widget.scrollToBottom()
+        if self.chat_list_widget.verticalScrollBar().value() >= scroll_position + 5:
+            self.chat_list_widget.verticalScrollBar().setValue(scroll_position)
 
     def send_message(self):
         if not self.selected_user:
-            self.chat_display.append("Please select a user to chat with")
             return
-            
+
         message = self.message_input.toPlainText().strip()
         if not message:
             return
-            
+
         success = self.peer_connection.send_message(self.selected_user, message)
         if success:
-            self.chat_display.append(f"You: {message}")
             self.message_input.clear()
+            self.load_chat_history()
+            self.chat_list_widget.scrollToBottom()
         else:
-            self.chat_display.append("Failed to send message")
+            error_dialog = QMessageBox(self)
+            error_dialog.setIcon(QMessageBox.Critical)
+            error_dialog.setWindowTitle("Message Error")
+            error_dialog.setText("Failed to send the message.")
+            error_dialog.exec()
 
     def handle_text_message(self, message_dict):
-        """Handle incoming text messages"""
         sender = message_dict['sender_id']
         content = message_dict['content']
-        self.chat_display.append(f"{sender}: {content}")
+        if sender == self.selected_user:
+            self.refresh_chat_signal.emit()
+        else:
+            print("notif received")
+            notifier = ToastNotifier()
+            notifier.show_toast(f"new message from {sender}", content) # TODO: handle images for notification
 
     def update_online_users(self, online_users: list):
         """Update the list of online users and their P2P connection info"""
@@ -292,6 +373,15 @@ class ClientChatMenu(QWidget):
             list_item.setSizeHint(mo.sizeHint())
             self.users_list_widget.addItem(list_item)
             self.users_list_widget.setItemWidget(list_item, mo)
+
+        if self.selected_user and self.selected_user in self.other_users_list:
+            selected_box = self.other_users_list[self.selected_user]
+            if selected_box.is_online:
+                self.message_input.setDisabled(False)
+                self.send_button.setDisabled(False)
+            else:
+                self.message_input.setDisabled(True)
+                self.send_button.setDisabled(True)
 
     def get_other_users_info(self):
         latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())

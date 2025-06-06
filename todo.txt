@@ -1,13 +1,6 @@
 --better to implement from top to bottom
-sending and receiving messages for only online users, messages are text messages and medias
-main scene UI: include online chat and offline chat
-notifications: tell the receiver who sent a message
-logs: include all events
+media messages, include an attach file button
 -bonus scores
 modern and comprehensible UI
 automatic testing
 voice call
--database
-use SQLite for both server and client and encrypt it
-in server: username (unique), hashed password using a salt, maybe email, public key, profile picture, last seen, display name
-client: messages, sender/receiver, timestamp, attachment, private key
