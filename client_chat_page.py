@@ -107,20 +107,16 @@ class Morph(QWidget):
         self.image_label = QLabel()
         self.set_image(image_bytes)
 
-        self.online_circle = CircleIndicator(diameter=10, color=Qt.green)
-        self.online_circle.hide()
-        signs_layout.addWidget(self.online_circle)
 
-        self.unread_circle = CircleIndicator(diameter=10, color=Qt.red)
-        self.unread_circle.hide()
-        signs_layout.addWidget(self.unread_circle)
 
         # Add indicators if needed
         if self.is_online:
-            self.online_circle.show()
+            online_circle = CircleIndicator(diameter=10, color=Qt.green)
+            signs_layout.addWidget(online_circle)
 
         if self.has_unread_messages:
-            self.unread_circle.show()
+            unread_circle = CircleIndicator(diameter=10, color=Qt.red)
+            signs_layout.addWidget(unread_circle)
 
         # Layout composition
         text_layout.addWidget(self.title_label)
@@ -202,6 +198,7 @@ class ClientChatMenu(QWidget):
         self.latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())
         self.refresh_ui_signal.connect(self.refresh_user_list_ui)
         self.refresh_chat_signal.connect(self.load_chat_history)
+        self._suppress_selection_event = False
 
         self.peer_connection = PeerConnection(
             username=online_user.username,
@@ -249,19 +246,19 @@ class ClientChatMenu(QWidget):
         self.setLayout(layout)
 
     def on_user_selected(self):
+        if getattr(self, '_suppress_selection_event', False):
+            return  # Ignore selection if we're programmatically updating the list
+
         items = self.users_list_widget.selectedItems()
         if not items:
             return
 
-        item  = items[0]
+        item = items[0]
         widget = self.users_list_widget.itemWidget(item)
         self.selected_user = widget.username
-        if widget.is_online:
-            self.message_input.setDisabled(False)
-            self.send_button.setDisabled(False)
-        else:
-            self.message_input.setDisabled(True)
-            self.send_button.setDisabled(True)
+
+        self.message_input.setDisabled(not widget.is_online)
+        self.send_button.setDisabled(not widget.is_online)
 
         self.local_database.mark_messages_as_read_until_sent_or_read(widget.username)
         self.load_chat_history()
@@ -323,8 +320,9 @@ class ClientChatMenu(QWidget):
             self.refresh_chat_signal.emit()
         else:
             print("notif received")
-            notifier = ToastNotifier()
-            notifier.show_toast(f"new message from {sender}", content) # TODO: handle images for notification
+            if content.strip():  # only show toast if there is visible content
+                notifier = ToastNotifier()
+                notifier.show_toast(f"New message from {sender}", content)
 
     def update_online_users(self, online_users: list):
         """Update the list of online users and their P2P connection info"""
@@ -352,6 +350,7 @@ class ClientChatMenu(QWidget):
                 online_users = fetch_online_users()
                 self.update_online_users(online_users)
                 self.get_other_users_info()
+                print("users updated")
                 self.refresh_ui_signal.emit()
             except Exception as e:
                 self.log.append_log(f"Error updating online users: {str(e)}")
@@ -359,8 +358,9 @@ class ClientChatMenu(QWidget):
             time.sleep(5)  # Update every 5 seconds
 
     def refresh_user_list_ui(self):
-        self.users_list_widget.clear()
+        self._suppress_selection_event = True  # 👈 suppress selection change handler temporarily
 
+        self.users_list_widget.clear()
         sorted_boxes = sorted(
             self.other_users_list.values(),
             key=lambda box: box.latest_message_timestamp.timestamp,
@@ -369,19 +369,26 @@ class ClientChatMenu(QWidget):
 
         for box in sorted_boxes:
             list_item = QListWidgetItem()
-            mo = Morph(box.image_bytes, box.display_name, box.subtitle, box.latest_message_timestamp, box.is_online, box.username, box.has_unread)
+            mo = Morph(box.image_bytes, box.display_name, box.subtitle, box.latest_message_timestamp, box.is_online,
+                       box.username, box.has_unread)
             list_item.setSizeHint(mo.sizeHint())
             self.users_list_widget.addItem(list_item)
             self.users_list_widget.setItemWidget(list_item, mo)
 
+        self._suppress_selection_event = False  # 👈 re-enable after population
+
+        # Restore selection manually if user is already selected
+        if self.selected_user:
+            for i in range(self.users_list_widget.count()):
+                widget = self.users_list_widget.itemWidget(self.users_list_widget.item(i))
+                if widget.username == self.selected_user:
+                    self.users_list_widget.setCurrentRow(i)
+                    break
+
         if self.selected_user and self.selected_user in self.other_users_list:
             selected_box = self.other_users_list[self.selected_user]
-            if selected_box.is_online:
-                self.message_input.setDisabled(False)
-                self.send_button.setDisabled(False)
-            else:
-                self.message_input.setDisabled(True)
-                self.send_button.setDisabled(True)
+            self.message_input.setDisabled(not selected_box.is_online)
+            self.send_button.setDisabled(not selected_box.is_online)
 
     def get_other_users_info(self):
         latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())
@@ -414,7 +421,7 @@ class ClientChatMenu(QWidget):
             if message.is_income:
                 has_unread = not message.is_read
             else:
-                has_unread = True
+                has_unread = False
             self.other_users_list[message.recipient_username] = OtherUsersBox(profile_image_bytes, display_name, message.message.decode(), message.timestamp, is_online, message.recipient_username, has_unread)
 
         for user in temp_online_dict.values():
