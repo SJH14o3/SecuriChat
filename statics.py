@@ -32,6 +32,9 @@ DATABASE_LOGIN_PASSWORD_MISSMATCH = "605"
 DATABASE_ENCRYPTION_FAILED = "606"
 DATABASE_USERNAME_NOT_FOUND = "607"
 
+MESSAGE_TYPE_TEXT = "text"
+MESSAGE_TYPE_FILE = "file"
+
 # used to print request name
 def convert_to_request_name(request):
     if request == SERVER_PING:

@@ -4,9 +4,10 @@ import json
 import time
 from typing import Dict, Optional, Callable
 
-from local_database import LocalDatabase, MESSAGE_TYPE_TEXT
-from message import OnionMessage, create_onion_message, process_onion_message, receive_final_message, LocalMessage
+from local_database import LocalDatabase, MESSAGE_TYPE_TEXT, MESSAGE_TYPE_FILE
+from message import OnionMessage, create_onion_message, create_onion_message_encrypted, process_onion_message, receive_final_message
 from message import MessageError, create_message_ack
+from local_message import LocalMessage
 from log import Log
 from statics import *
 from timestamp import Timestamp
@@ -14,8 +15,10 @@ from timestamp import Timestamp
 CHUNK_SIZE = 8192
 
 def get_message_database_type(type_: str) -> int:
-    if type_ == "text":
-        return MESSAGE_TYPE_TEXT
+    if type_ == MESSAGE_TYPE_TEXT:
+        return 0
+    elif type_ == MESSAGE_TYPE_FILE:
+        return 4
     else:
         return 0
 
@@ -24,30 +27,23 @@ class PeerConnection:
         self.username = username
         self.private_key = private_key
         self.log = log
-        self.peers: Dict[str, tuple] = {}  # username -> (ip, port, public_key)
+        self.peers: Dict[str, tuple] = {}
         self.message_handlers: Dict[str, Callable] = {}
         self.is_running = True
         self.aes_key = aes_key
-        
-        # Create listening socket
         self.listener_socket = receiver_socket
         self.ip, self.port = self.listener_socket.getsockname()
         self.database = database
-        
-        # Start listening thread
         self.listener_socket.listen(10)
         self.listen_thread = threading.Thread(target=self._listen_for_connections)
         self.listen_thread.daemon = True
         self.listen_thread.start()
-        
         self.log.append_log(f"P2P Connection initialized for {username} on {self.ip}:{self.port}")
 
     def register_message_handler(self, message_type: str, handler: Callable):
-        """Register a handler for a specific message type"""
         self.message_handlers[message_type] = handler
 
     def _listen_for_connections(self):
-        """Listen for incoming peer connections"""
         while self.is_running:
             try:
                 client_socket, address = self.listener_socket.accept()
@@ -63,70 +59,83 @@ class PeerConnection:
         peer_socket.send(CLIENT_IS_ONLINE.encode())
 
     def handle_peer_message(self, peer_socket: socket.socket, address: tuple):
-        self.log.append_log(f"Handling peer message from {address}")
-        peer_socket.sendall(BUFFER.encode())
-        # Step 3: Receive message with improved chunking
-        message_data = b""
-        chunks_count = int(peer_socket.recv(1024).decode())
-        peer_socket.send(BUFFER.encode())
-        for _ in range(chunks_count):
-            message_data += peer_socket.recv(CHUNK_SIZE)
-            peer_socket.send(BUFFER.encode())
-        peer_socket.recv(1024) # sender okay
-        if b"END_OF_MESSAGE" in message_data:
-            message_data = message_data[:message_data.index(b"END_OF_MESSAGE")]
-
-        if not message_data:
-            self.log.append_log(f"No message data received from {address}")
-            return
-
-        # Step 4: Process message and send acknowledgment
-        message_dict = receive_final_message(message_data, self.private_key)
-        self.log.append_log(f"Successfully processed message from {message_dict.get('sender_id')}")
-
-        # Send ready for ack signal
-        peer_socket.sendall(CLIENT_ACK_OK.encode())
-        peer_socket.recv(1024) # sender okay
-        self.log.append_log(f"Sent ready for ack signal to {address}")
-
-        # Send acknowledgment
-        ack = create_message_ack(message_dict['message_id'], message_dict['sender_id'])
-        ack_json = json.dumps(ack)
-        ack_msg = ack_json + "END_OF_ACK"
-        chunks = [ack_msg[i:i+CHUNK_SIZE] for i in range(0, len(ack_msg), CHUNK_SIZE)]
-        chunks_count = len(chunks)
-        peer_socket.send(f"{chunks_count}".encode())
-        peer_socket.recv(1024) # sender okay
-        for chunk in chunks:
-            peer_socket.sendall(chunk.encode())
-            peer_socket.recv(1024) # sender okay
-
-        self.log.append_log(f"Sent acknowledgment to {address}")
-        # Handle message type
-        message_type = message_dict.get('message_type', 'text')
-        local_message = LocalMessage(0, message_dict['sender_id'], get_message_database_type(message_dict['message_type']), True, message_dict['content'].encode(), Timestamp.get_now(), False)
-        self.database.store_message(local_message, self.aes_key, self.log)
-        if message_type in self.message_handlers:
-            self.message_handlers[message_type](message_dict)
-            self.log.append_log(f"Handled message of type {message_type} from {address}")
-        else:
-            print(f"[RECEIVE] No handler for message type {message_type} from {address}")
-            self.log.append_log(f"No handler for message type {message_type} from {address}")
-
-    def _handle_peer_connection(self, peer_socket: socket.socket, address: tuple):
-        """Handle incoming peer connection"""
         try:
-            peer_socket.settimeout(10)  # 10 second timeout
-            request = peer_socket.recv(1024).decode().strip()
-            self.log.append_log(f"Received request '{convert_to_request_name(request)}' from {address}")
-            # Handle server ping
-            if request == SERVER_PING:
-                self.handle_server_ping_response(peer_socket)
-            # Handle peer message
-            elif request == CLIENT_PEER_MESSAGE:
-                self.handle_peer_message(peer_socket, address)
+            peer_socket.send(SERVER_OK.encode())  # Send OK response first
+            
+            # Receive message length first
+            try:
+                length_bytes = peer_socket.recv(4)
+                if not length_bytes:
+                    raise MessageError("Empty length received")
+                message_length = int.from_bytes(length_bytes, byteorder='big')
+                self.log.append_log(f"Received message length: {message_length} from {address}")
+            except Exception as e:
+                raise MessageError(f"Failed to receive message length: {str(e)}")
+
+            peer_socket.send(SERVER_OK.encode())  # Acknowledge length receipt
+            
+            # Receive the full message
+            try:
+                encrypted_data = b''
+                while len(encrypted_data) < message_length:
+                    chunk = peer_socket.recv(min(8192, message_length - len(encrypted_data)))
+                    if not chunk:
+                        raise MessageError("Connection closed while receiving message")
+                    encrypted_data += chunk
+                self.log.append_log(f"Received full encrypted data of length {len(encrypted_data)} from {address}")
+            except Exception as e:
+                raise MessageError(f"Failed to receive message data: {str(e)}")
+            
+            # Decrypt and process message
+            try:
+                message_dict = receive_final_message(encrypted_data, self.private_key)
+                message_type = message_dict.get('message_type', 'text')
+                self.log.append_log(f"Successfully decrypted message of type {message_type} from {address}")
+            except Exception as e:
+                self.log.append_log(f"Decryption error details - Length: {len(encrypted_data)}, First 32 bytes: {encrypted_data[:32].hex()}")
+                raise MessageError(f"Failed to decrypt message: {str(e)}")
+
+            # Create and store local message
+            try:
+                local_message = LocalMessage(
+                    message_id=0,
+                    recipient_username=message_dict['sender_id'],
+                    message_type=get_message_database_type(message_dict['message_type']),
+                    is_income=True,
+                    message=message_dict['content'].encode() if isinstance(message_dict['content'], str) else message_dict['content'],
+                    timestamp=Timestamp.get_now(),
+                    is_read=False,
+                    file_name=message_dict.get('file_name'),
+                    file_size=message_dict.get('file_size')
+                )
+                self.database.store_message(local_message, self.aes_key, self.log)
+                self.log.append_log(f"Stored message from {message_dict['sender_id']} in database")
+            except Exception as e:
+                raise MessageError(f"Failed to store message: {str(e)}")
+
+            # Handle message based on type
+            if message_type in self.message_handlers:
+                try:
+                    self.message_handlers[message_type](message_dict)
+                    self.log.append_log(f"Successfully handled message of type {message_type} from {address}")
+                except Exception as e:
+                    raise MessageError(f"Failed to handle message: {str(e)}")
             else:
-                self.log.append_log(f"Unknown request type from {address}: {request}")
+                print(f"[RECEIVE] No handler for message type {message_type} from {address}")
+                self.log.append_log(f"No handler for message type {message_type} from {address}")
+
+            # Send acknowledgment
+            try:
+                ack = create_message_ack(message_dict['message_id'], message_dict['sender_id'])
+                ack_json = json.dumps(ack)
+                ack_bytes = ack_json.encode()
+                peer_socket.send(len(ack_bytes).to_bytes(4, byteorder='big'))  # Send length first
+                peer_socket.recv(1024)  # Wait for length acknowledgment
+                peer_socket.send(ack_bytes)  # Send actual data
+                peer_socket.recv(1024)  # Wait for final confirmation
+                self.log.append_log(f"Sent acknowledgment for message {message_dict['message_id']}")
+            except Exception as e:
+                raise MessageError(f"Failed to send acknowledgment: {str(e)}")
 
         except Exception as e:
             print(f"[RECEIVE] Error in connection handler for {address}: {str(e)}")
@@ -137,113 +146,132 @@ class PeerConnection:
             except Exception as e:
                 self.log.append_log(f"Error in final clause for _handle_peer_connection: {str(e)}")
 
-    def send_message(self, recipient_username: str, message_content: str, message_type: str = 'text') -> bool:
-        """Send a message to a peer"""
-        if recipient_username not in self.peers:
-            self.log.append_log(f"Unknown recipient: {recipient_username}")
-            print(f"[SEND] Recipient username '{recipient_username}' not in peers")
-            return False
-
+    def _handle_peer_connection(self, peer_socket: socket.socket, address: tuple):
         try:
-            # Get recipient info first
-            recipient_ip, recipient_port, recipient_public_key = self.peers[recipient_username]
-
-            # Create message object
-            message = OnionMessage(
-                content=message_content,
-                sender_id=self.username,
-                recipient_id=recipient_username,
-                message_type=message_type
-            )
-            # Add encryption layer
-            try:
-                message.add_layer(
-                    node_public_key=recipient_public_key,
-                    next_address=(recipient_ip, str(recipient_port))
-                )
-            except Exception as e:
-                print(f"[SEND] Failed to add encryption for {recipient_username}: {str(e)}")
-                return False
-            
-            # Create encrypted message
-            try:
-                encrypted_message = create_onion_message(message, self.private_key)
-            except Exception as e:
-                print(f"[SEND] Failed to create encrypted message for {recipient_username}: {str(e)}")
-                return False
-
-            # Send message
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(15)  # 15 second timeout
-                
-                with s:
-                    s.connect((recipient_ip, int(recipient_port)))
-                    s.sendall(CLIENT_PEER_MESSAGE.encode())
-                    try:
-                        ready_signal = s.recv(1024).decode().strip()
-                        if ready_signal != BUFFER:
-                            raise Exception(f"Expected {BUFFER}, got: '{ready_signal}'")
-                    except Exception as e:
-                        print(f"[SEND] Failed to get valid ready signal from {recipient_username}: {str(e)}")
-                        return False
-                    
-                    # Send encrypted message in chunks
-                    msg_with_end = encrypted_message + b"END_OF_MESSAGE"
-                    chunks = [msg_with_end[i:i + CHUNK_SIZE] for i in range(0, len(msg_with_end), CHUNK_SIZE)]
-                    chunks_count = len(chunks)
-                    s.send(f"{chunks_count}".encode())
-                    s.recv(1024) # receiver okay
-                    for i in range(chunks_count):
-                        s.sendall(chunks[i])
-                        s.recv(1024) # receiver okay
-                    s.send(BUFFER.encode())
-                    # Wait for ready for ack signal
-                    ack_ready = s.recv(1024).decode()
-                    if ack_ready != CLIENT_ACK_OK:
-                        raise Exception(f"Expected READY_FOR_ACK, got: '{ack_ready}'")
-                    s.send(BUFFER.encode())
-                    chunks_count = int(s.recv(1024).decode())
-                    ack_data = b""
-                    s.send(BUFFER.encode())
-                    for i in range(chunks_count):
-                        ack_data += s.recv(CHUNK_SIZE)
-                        s.send(BUFFER.encode())
-                    if b"END_OF_ACK" in ack_data:
-                        ack_data = ack_data[:ack_data.index(b"END_OF_ACK")]
-                    # Process acknowledgment
-                    ack_json = ack_data.decode()
-
-                    ack = json.loads(ack_json)
-                    if ack.get('type') == 'ack' and ack.get('message_id') == message.message_id:
-                        local_message = LocalMessage(0, recipient_username, get_message_database_type(message_type), False, message_content.encode(), Timestamp.get_now(), True)
-                        self.database.store_message(local_message, self.aes_key, self.log)
-                        return True
-
-                    print(f"[SEND] Invalid ack from {recipient_username} - Type: {ack.get('type')}, Expected ID: {message.message_id}, Got ID: {ack.get('message_id')}")
-                    return False
-
-            except Exception as e:
-                print(f"[SEND] Error in message sending to {recipient_username}: {str(e)}")
-                return False
-
+            peer_socket.settimeout(10)
+            request = peer_socket.recv(1024).decode().strip()
+            self.log.append_log(f"Received request '{convert_to_request_name(request)}' from {address}")
+            if request == SERVER_PING:
+                self.handle_server_ping_response(peer_socket)
+            elif request == CLIENT_PEER_MESSAGE:
+                self.handle_peer_message(peer_socket, address)
+            else:
+                self.log.append_log(f"Unknown request type from {address}: {request}")
         except Exception as e:
-            print(f"[SEND] Unexpected error sending to {recipient_username}: {str(e)}")
+            print(f"[RECEIVE] Error in connection handler for {address}: {str(e)}")
+            self.log.append_log(f"Error in connection handler for {address}: {str(e)}")
+        finally:
+            try:
+                peer_socket.close()
+            except Exception as e:
+                self.log.append_log(f"Error in final clause for _handle_peer_connection: {str(e)}")
+
+    def send_message(self, recipient_username: str, message_content: str, message_type: str = 'text', file_name: str = None, file_size: int = None) -> bool:
+        try:
+            if recipient_username not in self.peers:
+                print(f"[SEND] Unknown recipient: {recipient_username}")
+                return False
+
+            recipient_address = self.peers[recipient_username]
+            self.log.append_log(f"Creating message for {recipient_username} of type {message_type}")
+
+            try:
+                message = create_onion_message(
+                    message_content,
+                    self.username,
+                    recipient_username,
+                    message_type,
+                    file_name,
+                    file_size
+                )
+                self.log.append_log(f"Created onion message with ID {message.message_id}")
+            except Exception as e:
+                raise MessageError(f"Failed to create message: {str(e)}")
+
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(10)
+                    s.connect((recipient_address[0], int(recipient_address[1])))
+                    s.send(CLIENT_PEER_MESSAGE.encode())
+                    response = s.recv(1024).decode().strip()
+                    if response != SERVER_OK:
+                        raise MessageError(f"Server rejected connection: {response}")
+
+                    # Send encrypted message with length prefix
+                    try:
+                        encrypted_message = create_onion_message_encrypted(message, recipient_address[2])
+                        self.log.append_log(f"Created encrypted message of length {len(encrypted_message)}")
+                    except Exception as e:
+                        raise MessageError(f"Failed to encrypt message: {str(e)}")
+
+                    try:
+                        s.send(len(encrypted_message).to_bytes(4, byteorder='big'))  # Send length first
+                        response = s.recv(1024).decode().strip()
+                        if response != SERVER_OK:
+                            raise MessageError(f"Server rejected message length: {response}")
+                        s.send(encrypted_message)  # Send actual data
+                        self.log.append_log(f"Sent encrypted message to {recipient_username}")
+                    except Exception as e:
+                        raise MessageError(f"Failed to send encrypted message: {str(e)}")
+                    
+                    # Wait for and parse acknowledgment
+                    try:
+                        length_bytes = s.recv(4)
+                        if not length_bytes:
+                            raise MessageError("Empty acknowledgment length received")
+                        ack_length = int.from_bytes(length_bytes, byteorder='big')
+                        s.send(SERVER_OK.encode())  # Acknowledge length receipt
+                        
+                        ack_json = s.recv(ack_length).decode()
+                        if not ack_json:
+                            raise MessageError("Empty acknowledgment received")
+                        ack = json.loads(ack_json)
+                        s.send(SERVER_OK.encode())  # Send final confirmation
+                        self.log.append_log(f"Received acknowledgment for message {message.message_id}")
+                    except json.JSONDecodeError as e:
+                        raise MessageError(f"Invalid acknowledgment format: {ack_json}")
+                    except Exception as e:
+                        raise MessageError(f"Failed to receive acknowledgment: {str(e)}")
+
+                    if ack.get('type') == 'ack' and ack.get('message_id') == message.message_id:
+                        try:
+                            local_message = LocalMessage(
+                                message_id=0,
+                                recipient_username=recipient_username,
+                                message_type=get_message_database_type(message_type),
+                                is_income=False,
+                                message=message_content.encode() if isinstance(message_content, str) else message_content,
+                                timestamp=Timestamp.get_now(),
+                                is_read=True,
+                                file_name=file_name,
+                                file_size=file_size
+                            )
+                            self.database.store_message(local_message, self.aes_key, self.log)
+                            self.log.append_log(f"Stored sent message in database")
+                            return True
+                        except Exception as e:
+                            raise MessageError(f"Failed to store sent message: {str(e)}")
+                    
+                    raise MessageError(f"Invalid acknowledgment - Type: {ack.get('type')}, Expected ID: {message.message_id}, Got ID: {ack.get('message_id')}")
+            except MessageError:
+                raise
+            except Exception as e:
+                raise MessageError(f"Connection error: {str(e)}")
+        except Exception as e:
+            print(f"[SEND] Error sending to {recipient_username}: {str(e)}")
+            self.log.append_log(f"Error sending to {recipient_username}: {str(e)}")
             return False
 
     def update_peer(self, username: str, ip: str, port: int, public_key: str):
-        """Update or add a peer's connection information"""
         self.peers[username] = (ip, str(port), public_key)
         self.log.append_log(f"Updated peer information for {username}: {ip}:{port}")
 
     def remove_peer(self, username: str):
-        """Remove a peer from the connection list"""
         if username in self.peers:
             del self.peers[username]
             self.log.append_log(f"Removed peer: {username}")
 
     def stop(self):
-        """Stop the peer connection"""
         self.is_running = False
         self.listener_socket.close()
-        self.log.append_log("P2P Connection stopped") 
+        self.log.append_log("P2P Connection stopped")

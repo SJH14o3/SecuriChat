@@ -5,10 +5,10 @@ import threading
 import time
 from typing import List, Dict
 import sys
-
+import os
 from PySide6.QtGui import QPixmap, QColor, QPainter
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QListWidget, \
-    QSizePolicy, QListWidgetItem, QMessageBox
+    QSizePolicy, QListWidgetItem, QMessageBox, QFileDialog
 from PySide6.QtCore import Qt, QSize, Signal
 from win10toast import ToastNotifier
 import local_database
@@ -19,41 +19,35 @@ from server import PORT
 from peer_connection import PeerConnection
 from timestamp import Timestamp
 
-
 def receive_image_bytes_from_socket(conn: socket.socket) -> bytes:
     length_bytes = conn.recv(4)
-    image_length = int.from_bytes(length_bytes, byteorder='big') # image size is converted into integer
+    image_length = int.from_bytes(length_bytes, byteorder='big')
     conn.send(BUFFER.encode())
-    # receiving image profile
     received_data = b''
     while len(received_data) < image_length:
         chunk = conn.recv(min(4096, image_length - len(received_data)))
         if not chunk:
             break
         received_data += chunk
-
     conn.send(BUFFER.encode())
     return received_data
 
 def fetch_online_users() -> List[OnlineUser]:
-    """Fetch list of online users from server"""
     online_users = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect(('127.0.0.1', PORT))
         s.send(CLIENT_FETCH_ONLINE_USERS_REQUEST.encode())
-        s.recv(1024).decode()  # server OK
-        s.send(BUFFER.encode())  # client OK
-        count = int(s.recv(1024).decode())  # count of online users
-        s.send(BUFFER.encode())  # client OK
-        
+        s.recv(1024).decode()
+        s.send(BUFFER.encode())
+        count = int(s.recv(1024).decode())
+        s.send(BUFFER.encode())
         for _ in range(count):
-            data = s.recv(1024).decode()  # user json
-            s.send(BUFFER.encode())  # client OK
+            data = s.recv(1024).decode()
+            s.send(BUFFER.encode())
             user = OnlineUser.from_json(data)
             image = receive_image_bytes_from_socket(s)
             user.profile_picture = image
             online_users.append(user)
-            
     return online_users
 
 class OtherUsersBox:
@@ -88,67 +82,48 @@ class Morph(QWidget):
         text_layout = QVBoxLayout()
         signs_layout = QVBoxLayout()
         signs_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
         self.latest_message_timestamp = latest_message_timestamp
         self.is_online = is_online
         self.username = username
         self.display_name = display_name
         self.has_unread_messages = has_unread_messages
-
-        # Title
         self.title_label = QLabel(f"<b>{display_name}</b>")
         self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-        # Subtitle
         self.subtitle_label = QLabel()
         self.set_subtitle(subtitle)
-
-        # Image
         self.image_label = QLabel()
         self.set_image(image_bytes)
-
-
-
-        # Add indicators if needed
         if self.is_online:
             online_circle = CircleIndicator(diameter=10, color=Qt.green)
             signs_layout.addWidget(online_circle)
-
         if self.has_unread_messages:
             unread_circle = CircleIndicator(diameter=10, color=Qt.red)
             signs_layout.addWidget(unread_circle)
-
-        # Layout composition
         text_layout.addWidget(self.title_label)
         text_layout.addWidget(self.subtitle_label)
-
         main_layout.addWidget(self.image_label)
         main_layout.addLayout(text_layout)
-        main_layout.addStretch()  # Push signs_layout to the right
+        main_layout.addStretch()
         main_layout.addLayout(signs_layout)
-
         self.setLayout(main_layout)
 
     def set_image(self, image_bytes: bytes):
         byte_array = QByteArray(image_bytes)
         buffer = QBuffer(byte_array)
         buffer.open(QIODevice.ReadOnly)
-
         image = QPixmap()
         image.loadFromData(buffer.data())
-
         if not image.isNull():
             image = image.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         else:
             image = QPixmap(64, 64)
             image.fill(Qt.gray)
-
         self.image_label.setPixmap(image)
         self.image_label.setFixedSize(QSize(64, 64))
 
     def set_subtitle(self, subtitle: str):
         metrics = self.subtitle_label.fontMetrics()
-        elided_text = metrics.elidedText(subtitle, Qt.ElideRight, 400)  # Width in pixels
+        elided_text = metrics.elidedText(subtitle, Qt.ElideRight, 400)
         self.subtitle_label.setText(elided_text)
         self.subtitle_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.subtitle_label.setTextInteractionFlags(Qt.NoTextInteraction)
@@ -163,26 +138,115 @@ class Morph(QWidget):
         self.subtitle_label.setMaximumHeight(20)
 
 class MessageBubble(QWidget):
-    def __init__(self, text: str, timestamp: str, is_income: bool):
+    def __init__(self, text: str, timestamp: str, is_income: bool, message_type: int = 0, file_name: str = None, file_size: int = None):
         super().__init__()
+        self.text = text
+        self.timestamp = timestamp
+        self.is_income = is_income
+        self.message_type = message_type
+        self.file_name = file_name
+        self.file_size = file_size
+        self.setup_ui()
+
+    def setup_ui(self):
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        bubble = QLabel(text)
-        bubble.setWordWrap(True)
-        bubble.setStyleSheet(
-            "background-color: #898989; border-radius: 10px; padding: 5px;" if is_income else
-            "background-color: #C17D1D; color: white; border-radius: 10px; padding: 5px;"
-        )
+        message_widget = QWidget()
+        message_layout = QHBoxLayout()
+        message_layout.setContentsMargins(10, 5, 10, 5)
 
-        timestamp_label = QLabel(timestamp)
-        timestamp_label.setStyleSheet("font-size: 10px; color: gray;")
-        timestamp_label.setAlignment(Qt.AlignRight)
+        if self.message_type == 4:  # File message
+            file_widget = QWidget()
+            file_layout = QHBoxLayout()
+            file_layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(bubble)
+            file_icon = QLabel()
+            file_icon.setPixmap(QPixmap("icons/file.png").scaled(20, 20))
+            file_layout.addWidget(file_icon)
+
+            file_info = QLabel(f"{self.file_name}\n{self.file_size} bytes")
+            file_info.setStyleSheet("color: #000000;")  # Black text for file info
+            file_layout.addWidget(file_info)
+
+            download_button = QPushButton("Download")
+            download_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #1976D2;
+                }
+                QPushButton:pressed {
+                    background-color: #0D47A1;
+                }
+            """)
+            download_button.clicked.connect(lambda: self.download_file(self.text, self.file_name))
+            file_layout.addWidget(download_button)
+
+            file_widget.setLayout(file_layout)
+            message_layout.addWidget(file_widget)
+        else:
+            message_label = QLabel(self.text)
+            message_label.setWordWrap(True)
+            message_label.setStyleSheet("color: #000000;")  # Black text for messages
+            message_layout.addWidget(message_label)
+
+        message_widget.setLayout(message_layout)
+        
+        # Set different background colors and styles for sent vs received messages
+        if not self.is_income:  # Sent messages
+            message_widget.setStyleSheet("""
+                background-color: #E3F2FD;
+                border-radius: 10px;
+                border: 1px solid #BBDEFB;
+            """)
+        else:  # Received messages
+            message_widget.setStyleSheet("""
+                background-color: #FFFFFF;
+                border-radius: 10px;
+                border: 1px solid #E0E0E0;
+            """)
+
+        timestamp_label = QLabel(self.timestamp)
+        timestamp_label.setStyleSheet("""
+            color: #757575;
+            font-size: 10px;
+            padding: 2px 5px;
+        """)
+        timestamp_label.setAlignment(Qt.AlignRight if not self.is_income else Qt.AlignLeft)
+
+        layout.addWidget(message_widget)
         layout.addWidget(timestamp_label)
-        layout.setAlignment(Qt.AlignLeft if is_income else Qt.AlignRight)
-        self.setLayout(layout)
+
+        container = QWidget()
+        container_layout = QHBoxLayout()
+        container_layout.setContentsMargins(10, 5, 10, 5)  # Add some padding around messages
+        if not self.is_income:
+            container_layout.addStretch()
+        container_layout.addLayout(layout)
+        if self.is_income:
+            container_layout.addStretch()
+        container.setLayout(container_layout)
+
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(container)
+        self.setLayout(main_layout)
+
+    def download_file(self, content: str, file_name: str):
+        try:
+            path, _ = QFileDialog.getSaveFileName(self, "Save File", file_name, "All Files (*.*)")
+            if path:
+                with open(path, 'wb') as f:
+                    f.write(content.encode('latin1'))  # Use latin1 to avoid encoding errors
+                QMessageBox.information(self, "Success", "File downloaded successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to download file: {str(e)}")
 
 class ClientChatMenu(QWidget):
     refresh_ui_signal = Signal()
@@ -199,7 +263,6 @@ class ClientChatMenu(QWidget):
         self.refresh_ui_signal.connect(self.refresh_user_list_ui)
         self.refresh_chat_signal.connect(self.load_chat_history)
         self._suppress_selection_event = False
-
         self.peer_connection = PeerConnection(
             username=online_user.username,
             private_key=self.get_private_key(),
@@ -208,14 +271,14 @@ class ClientChatMenu(QWidget):
             database=self.local_database,
             aes_key=self.get_aes_key()
         )
-        self.peer_connection.register_message_handler('text', self.handle_text_message)
-
+        self.peer_connection.register_message_handler(MESSAGE_TYPE_TEXT, self.handle_text_message)
+        self.peer_connection.register_message_handler(MESSAGE_TYPE_FILE, self.handle_text_message)  # Use same handler for files
         self.chat_list_widget = QListWidget()
         self.message_input = QTextEdit()
         self.send_button = QPushButton("Send")
+        self.file_button = QPushButton("Send File")
         self.users_layout = QVBoxLayout()
         self.users_list_widget = QListWidget()
-
         self.setup_ui()
         self.other_users_list: Dict[str, OtherUsersBox] = {}
         self.other_online_users_list: Dict[str, OnlineUser] = {}
@@ -224,42 +287,65 @@ class ClientChatMenu(QWidget):
 
     def setup_ui(self):
         layout = QHBoxLayout()
-
         self.users_layout.addWidget(self.users_list_widget)
         self.users_list_widget.itemSelectionChanged.connect(self.on_user_selected)
-
         chat_layout = QVBoxLayout()
         self.chat_list_widget.setSpacing(5)
         self.chat_list_widget.setStyleSheet("border: none;")
         self.message_input.setMaximumHeight(100)
         self.send_button.clicked.connect(self.send_message)
+        self.file_button.clicked.connect(self.select_and_send_file)
         self.message_input.setDisabled(True)
         self.send_button.setDisabled(True)
-
+        self.file_button.setDisabled(True)
         chat_layout.addWidget(self.chat_list_widget)
         chat_layout.addWidget(self.message_input)
-        chat_layout.addWidget(self.send_button)
-
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(self.message_input)
+        input_layout.addWidget(self.send_button)
+        input_layout.addWidget(self.file_button)
+        chat_layout.addLayout(input_layout)
         layout.addLayout(self.users_layout, 1)
         layout.addLayout(chat_layout, 2)
-
         self.setLayout(layout)
+
+    def select_and_send_file(self):
+        if not self.selected_user:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Select File", "", "All Files (*.*)")
+        if path:
+            try:
+                with open(path, 'rb') as f:
+                    file_content = f.read().decode('latin1')  # Use latin1 to avoid decoding errors
+                file_name = os.path.basename(path)
+                file_size = os.path.getsize(path)
+                success = self.peer_connection.send_message(
+                    self.selected_user,
+                    file_content,
+                    message_type=MESSAGE_TYPE_FILE,
+                    file_name=file_name,
+                    file_size=file_size
+                )
+                if success:
+                    self.load_chat_history()
+                    self.chat_list_widget.scrollToBottom()
+                else:
+                    QMessageBox.critical(self, "Error", "Failed to send file")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to send file: {str(e)}")
 
     def on_user_selected(self):
         if getattr(self, '_suppress_selection_event', False):
-            return  # Ignore selection if we're programmatically updating the list
-
+            return
         items = self.users_list_widget.selectedItems()
         if not items:
             return
-
         item = items[0]
         widget = self.users_list_widget.itemWidget(item)
         self.selected_user = widget.username
-
         self.message_input.setDisabled(not widget.is_online)
         self.send_button.setDisabled(not widget.is_online)
-
+        self.file_button.setDisabled(not widget.is_online)
         self.local_database.mark_messages_as_read_until_sent_or_read(widget.username)
         self.load_chat_history()
         self.chat_list_widget.scrollToBottom()
@@ -271,8 +357,8 @@ class ClientChatMenu(QWidget):
             self.chat_list_widget.addItem(QListWidgetItem("Select a chat to start messaging."))
             self.message_input.setDisabled(True)
             self.send_button.setDisabled(True)
+            self.file_button.setDisabled(True)
             return
-
         messages = self.local_database.get_a_user_all_messages(self.selected_user, self.get_aes_key())
         if not messages:
             item = QListWidgetItem()
@@ -281,11 +367,17 @@ class ClientChatMenu(QWidget):
             self.chat_list_widget.addItem(item)
             self.chat_list_widget.setItemWidget(item, bubble)
             return
-
-        for msg in reversed(messages):  # reverse to show oldest first
+        for msg in reversed(messages):
             item = QListWidgetItem()
             time_pretty = msg.timestamp.get_time_pretty(False)
-            bubble = MessageBubble(msg.message.decode(), time_pretty, msg.is_income)
+            bubble = MessageBubble(
+                msg.message.decode() if msg.message_type != 4 else msg.file_name,
+                time_pretty,
+                msg.is_income,
+                msg.message_type,
+                msg.file_name,
+                msg.file_size
+            )
             item.setSizeHint(bubble.sizeHint())
             self.chat_list_widget.addItem(item)
             self.chat_list_widget.setItemWidget(item, bubble)
@@ -296,11 +388,9 @@ class ClientChatMenu(QWidget):
     def send_message(self):
         if not self.selected_user:
             return
-
         message = self.message_input.toPlainText().strip()
         if not message:
             return
-
         success = self.peer_connection.send_message(self.selected_user, message)
         if success:
             self.message_input.clear()
@@ -319,18 +409,15 @@ class ClientChatMenu(QWidget):
         if sender == self.selected_user:
             self.refresh_chat_signal.emit()
         else:
-            print("notif received")
-            if content.strip():  # only show toast if there is visible content
+            if content.strip():
                 notifier = ToastNotifier()
-                notifier.show_toast(f"New message from {sender}", content)
+                notifier.show_toast(f"New message from {sender}", f"{'File: ' + message_dict.get('file_name', '') if message_dict.get('message_type') == MESSAGE_TYPE_FILE else content}")
 
     def update_online_users(self, online_users: list):
-        """Update the list of online users and their P2P connection info"""
         self.other_online_users_list.clear()
         for user in online_users:
             if user.username != self.online_user.username:
                 self.other_online_users_list[user.username] = user
-                # Update peer connection info with public key
                 self.peer_connection.update_peer(
                     username=user.username,
                     ip=user.ip_address,
@@ -339,14 +426,12 @@ class ClientChatMenu(QWidget):
                 )
 
     def start_online_users_updater(self):
-        """Start thread to update online users list"""
         self.updater_thread.daemon = True
         self.updater_thread.start()
 
     def update_online_users_periodically(self):
         while self.isRunning:
             try:
-                # Get online users from server
                 online_users = fetch_online_users()
                 self.update_online_users(online_users)
                 self.get_other_users_info()
@@ -355,18 +440,16 @@ class ClientChatMenu(QWidget):
             except Exception as e:
                 self.log.append_log(f"Error updating online users: {str(e)}")
                 print(e)
-            time.sleep(5)  # Update every 5 seconds
+            time.sleep(5)
 
     def refresh_user_list_ui(self):
-        self._suppress_selection_event = True  # 👈 suppress selection change handler temporarily
-
+        self._suppress_selection_event = True
         self.users_list_widget.clear()
         sorted_boxes = sorted(
             self.other_users_list.values(),
             key=lambda box: box.latest_message_timestamp.timestamp,
             reverse=True
         )
-
         for box in sorted_boxes:
             list_item = QListWidgetItem()
             mo = Morph(box.image_bytes, box.display_name, box.subtitle, box.latest_message_timestamp, box.is_online,
@@ -374,31 +457,28 @@ class ClientChatMenu(QWidget):
             list_item.setSizeHint(mo.sizeHint())
             self.users_list_widget.addItem(list_item)
             self.users_list_widget.setItemWidget(list_item, mo)
-
-        self._suppress_selection_event = False  # 👈 re-enable after population
-
-        # Restore selection manually if user is already selected
+        self._suppress_selection_event = False
         if self.selected_user:
             for i in range(self.users_list_widget.count()):
                 widget = self.users_list_widget.itemWidget(self.users_list_widget.item(i))
                 if widget.username == self.selected_user:
                     self.users_list_widget.setCurrentRow(i)
                     break
-
         if self.selected_user and self.selected_user in self.other_users_list:
             selected_box = self.other_users_list[self.selected_user]
             self.message_input.setDisabled(not selected_box.is_online)
             self.send_button.setDisabled(not selected_box.is_online)
+            self.file_button.setDisabled(not selected_box.is_online)
 
     def get_other_users_info(self):
         latest_messages = self.local_database.get_latest_messages_per_user(self.get_aes_key())
         self.other_users_list.clear()
         temp_online_dict: Dict[str, OnlineUser] = self.other_online_users_list.copy()
         for message in latest_messages:
-            # image profile, user display  name, online
             is_online = False
             profile_image_bytes = b''
             display_name = ""
+            subtitle = message.message.decode() if message.message_type != 4 else f"File: {message.file_name}"
             if message.recipient_username in temp_online_dict:
                 profile_image_bytes = temp_online_dict[message.recipient_username].profile_picture
                 display_name = temp_online_dict[message.recipient_username].name
@@ -408,27 +488,37 @@ class ClientChatMenu(QWidget):
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.connect(('127.0.0.1', PORT))
                     s.send(CLIENT_GET_DISPLAY_NAME.encode())
-                    s.recv(1024).decode() # server okay
+                    s.recv(1024).decode()
                     s.send(message.recipient_username.encode())
                     display_name = s.recv(1024).decode()
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.connect(('127.0.0.1', PORT))
                     s.send(CLIENT_GET_PROFILE_PICTURE.encode())
-                    s.recv(1024) # server okay
+                    s.recv(1024)
                     s.send(message.recipient_username.encode())
                     profile_image_bytes = receive_image_bytes_from_socket(s)
-            has_unread: bool
-            if message.is_income:
-                has_unread = not message.is_read
-            else:
-                has_unread = False
-            self.other_users_list[message.recipient_username] = OtherUsersBox(profile_image_bytes, display_name, message.message.decode(), message.timestamp, is_online, message.recipient_username, has_unread)
-
+            has_unread = not message.is_read if message.is_income else False
+            self.other_users_list[message.recipient_username] = OtherUsersBox(
+                profile_image_bytes,
+                display_name,
+                subtitle,
+                message.timestamp,
+                is_online,
+                message.recipient_username,
+                has_unread
+            )
         for user in temp_online_dict.values():
-            self.other_users_list[user.username] = OtherUsersBox(user.profile_picture, user.name, "", Timestamp.get_now(), True, user.username, False)
+            self.other_users_list[user.username] = OtherUsersBox(
+                user.profile_picture,
+                user.name,
+                "",
+                Timestamp.get_now(),
+                True,
+                user.username,
+                False
+            )
 
     def close_threads(self):
-        """Clean up threads and connections"""
         self.isRunning = False
         self.peer_connection.stop()
         if hasattr(self, 'updater_thread'):
@@ -440,7 +530,6 @@ class ClientChatMenu(QWidget):
             key = private_key_file.read()
         return key
 
-    # extracts aes key of user
     def get_aes_key(self):
         with open(f"users/{self.online_user.username}/aes_key.key", "rb") as f:
             return f.read()
