@@ -430,10 +430,9 @@ class MainWindow(QStackedWidget):
         self.setCurrentWidget(self.chat_page)
 
     def closeEvent(self, event):
-        if self.logged_in and hasattr(self, 'chat_page'):
+        if self.logged_in:
             self.chat_page.isRunning = False
             self.chat_page.close_threads()
-        event.accept()
 
 def main():
     app = QApplication(sys.argv)
