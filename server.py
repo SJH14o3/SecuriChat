@@ -64,7 +64,7 @@ def sign_in_request(conn: socket, addr):
     else:
         log.append_log(f"{username} with address {addr[0]}:{addr[1]} failed to sign in: {convert_to_request_name(db_result)}")
 
-# when a user wants to login, this function is called
+# when a user wants to log in, this function is called
 def login_request(conn: socket, addr):
     conn.send(SERVER_OK.encode())
     info = conn.recv(1024).decode()

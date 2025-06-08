@@ -1,3 +1,4 @@
+import shutil
 import socket
 import threading
 import random
@@ -67,6 +68,9 @@ def generate_and_store_aes_key(username):
     with open(f"users/{username}/aes_key.key", "wb") as f:
         f.write(aes_key)
 
+def generate_temp_folder(username):
+    os.makedirs(f"users/{username}/tmp", exist_ok=True)
+
 # trying to log in user
 def log_in(username, password, main_window):
     socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -95,6 +99,7 @@ def log_in(username, password, main_window):
         socket_connection.send(BUFFER.encode())
         profile_image = client_chat_page.receive_image_bytes_from_socket(socket_connection)
         online_user.profile_picture = profile_image
+        generate_temp_folder(username)
         main_window.switch_to_logged_in_client(online_user)
         return True, None
     else:
@@ -148,8 +153,11 @@ def sign_up(username: str, password: str, email:str, profile_image: bytes, displ
         ip_address = rx_ip_address
         port = local_port
         log = Log(f"{port}")
+        log.append_log("successfully created private and public key for RSA")
         store_key(private_key_bytes, username)
         generate_and_store_aes_key(username)
+        log.append_log("successfully created private key for AES")
+        generate_temp_folder(username)
         local_database.create_database(username)
         online_user = OnlineUser(ip_address, port, display_name, username,public_key_bytes, profile_image, timestamp.Timestamp.get_now())
         main_window.switch_to_logged_in_client(online_user)
@@ -433,6 +441,7 @@ class MainWindow(QStackedWidget):
         if self.logged_in:
             self.chat_page.isRunning = False
             self.chat_page.close_threads()
+            shutil.rmtree(f"users/{self.chat_page.online_user.username}/tmp") # removes all temporarily files
 
 def main():
     app = QApplication(sys.argv)
