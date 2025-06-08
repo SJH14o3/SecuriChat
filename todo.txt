@@ -1,5 +1,3 @@
---better to implement from top to bottom
-media messages, include an attach file button
 -bonus scores
 modern and comprehensible UI
 automatic testing

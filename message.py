@@ -1,3 +1,4 @@
+import hashlib
 import json
 import random
 import time
@@ -8,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding as asymmetric
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import os
+import local_database
 from timestamp import Timestamp
 
 # Constants
@@ -34,7 +36,7 @@ class OnionLayer:
         self.layer_id = str(uuid.uuid4())
 
 class OnionMessage:
-    def __init__(self, content: str, sender_id: str, recipient_id: str, message_type: str = 'text'):
+    def __init__(self, content: bytes, sender_id: str, recipient_id: str, message_type: int = 0):
         self.content = content
         self.sender_id = sender_id
         self.recipient_id = recipient_id
@@ -87,7 +89,7 @@ def validate_message(message_dict: Dict) -> bool:
         return False
         
     # Check message format
-    if not isinstance(message_dict['content'], str):
+    if not isinstance(message_dict['content'], bytes):
         return False
         
     return True
@@ -120,12 +122,10 @@ def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
     try:
         # Step 1: Load the public key
         try:
-            print(f"Loading public key...")
             public_key = serialization.load_pem_public_key(
                 public_key_pem.encode(),
                 backend=default_backend()
             )
-            print(f"Successfully loaded public key")
         except Exception as e:
             raise MessageError(f"Failed to load public key: {str(e)}")
 
@@ -133,7 +133,6 @@ def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
         try:
             aes_key = os.urandom(32)
             iv = os.urandom(16)
-            print(f"Generated AES key and IV")
         except Exception as e:
             raise MessageError(f"Failed to generate AES key or IV: {str(e)}")
 
@@ -147,7 +146,6 @@ def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
                     label=None
                 )
             )
-            print(f"Successfully encrypted AES key with RSA")
         except Exception as e:
             raise MessageError(f"Failed to encrypt AES key with RSA: {str(e)}")
 
@@ -155,7 +153,6 @@ def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
         try:
             cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
             encryptor = cipher.encryptor()
-            print(f"Created AES cipher")
         except Exception as e:
             raise MessageError(f"Failed to create AES cipher: {str(e)}")
 
@@ -163,14 +160,12 @@ def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
         try:
             padder = padding.PKCS7(128).padder()
             padded_data = padder.update(data) + padder.finalize()
-            print(f"Successfully added padding")
         except Exception as e:
             raise MessageError(f"Failed to add padding: {str(e)}")
 
         # Step 6: Encrypt data with AES
         try:
             encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-            print(f"Successfully encrypted data with AES")
         except Exception as e:
             raise MessageError(f"Failed to encrypt data with AES: {str(e)}")
 
@@ -179,7 +174,6 @@ def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
             h = hmac.HMAC(aes_key, hashes.SHA256())
             h.update(encrypted_data)
             mac = h.finalize()
-            print(f"Successfully generated HMAC")
         except Exception as e:
             raise MessageError(f"Failed to generate HMAC: {str(e)}")
 
@@ -204,7 +198,6 @@ def encrypt_layer(data: bytes, public_key_pem: str) -> bytes:
             
             # Final format: [checksum(32 bytes)][metadata_length(4 bytes)][metadata_json][encrypted_data]
             result = checksum + payload
-            print(f"Successfully formatted encrypted data")
             return result
         except Exception as e:
             raise MessageError(f"Failed to format encrypted data: {str(e)}")
@@ -226,7 +219,6 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
                 password=None,
                 backend=default_backend()
             )
-            print(f"Successfully loaded private key")
         except Exception as e:
             raise MessageError(f"Failed to load private key: {str(e)}")
         
@@ -248,11 +240,9 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
             metadata_json = payload[4:4+metadata_length]
             data_dict = json.loads(metadata_json.decode('utf-8'))
             encrypted_data_bytes = payload[4+metadata_length:]
-            print(f"Successfully parsed encrypted data format")
         except MessageCorruptionError as e:
             raise
         except Exception as e:
-            print(f"Raw encrypted data (first 50 bytes): {encrypted_data[:50]}")
             raise MessageError(f"Failed to parse encrypted data format: {str(e)}")
         
         try:
@@ -260,7 +250,6 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
             iv = bytes.fromhex(data_dict['iv'])
             mac = bytes.fromhex(data_dict['mac'])
             ciphertext = encrypted_data_bytes[:data_dict['data_length']]
-            print(f"Successfully extracted encryption components")
         except Exception as e:
             raise MessageError(f"Failed to extract encryption components: {str(e)}")
         
@@ -274,7 +263,6 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
                     label=None
                 )
             )
-            print(f"Successfully decrypted AES key")
         except Exception as e:
             raise MessageError(f"Failed to decrypt AES key: {str(e)}")
         
@@ -283,7 +271,6 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
             h = hmac.HMAC(aes_key, hashes.SHA256())
             h.update(ciphertext)
             h.verify(mac)
-            print(f"Successfully verified HMAC")
         except Exception as e:
             raise MessageCorruptionError(f"Message integrity check failed: {str(e)}")
         
@@ -292,7 +279,6 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
             cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
             decryptor = cipher.decryptor()
             padded_data = decryptor.update(ciphertext) + decryptor.finalize()
-            print(f"Successfully decrypted data with AES")
         except Exception as e:
             raise MessageError(f"Failed to decrypt data with AES: {str(e)}")
         
@@ -300,22 +286,18 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
         try:
             unpadder = padding.PKCS7(128).unpadder()
             data = unpadder.update(padded_data) + unpadder.finalize()
-            print(f"Successfully removed padding")
         except Exception as e:
             raise MessageError(f"Failed to remove padding: {str(e)}")
         
         # Parse the decrypted data
         try:
             decrypted_dict = json.loads(data.decode('utf-8'))
-            print(f"Successfully parsed decrypted data JSON")
         except Exception as e:
-            print(f"Raw decrypted data (first 50 bytes): {data[:50]}")
             raise MessageError(f"Failed to parse decrypted data JSON: {str(e)}")
         
         try:
             next_address = (str(decrypted_dict['next_ip']), str(decrypted_dict['next_port']))
             payload = bytes.fromhex(decrypted_dict['payload'])
-            print(f"Successfully extracted next hop information")
         except Exception as e:
             raise MessageError(f"Failed to extract next hop information: {str(e)}")
         
@@ -325,7 +307,6 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
                 is_valid, payload = verify_checksum(payload)
                 if not is_valid:
                     raise MessageCorruptionError("Checksum verification failed")
-                print(f"Successfully verified checksum")
             except Exception as e:
                 raise MessageCorruptionError(f"Checksum verification failed: {str(e)}")
         
@@ -338,15 +319,12 @@ def decrypt_layer(encrypted_data: bytes, private_key_pem: str) -> Tuple[bytes, T
 def create_onion_message(message: OnionMessage, sender_private_key: str) -> bytes:
     """Create an onion-encrypted message with integrity checks"""
     try:
-        print("[ONION] Creating onion message...")
-        
         # Split large messages into chunks
-        if len(message.content.encode()) > CHUNK_SIZE:
+        if len(message.content) > CHUNK_SIZE:
             chunks = [message.content[i:i+CHUNK_SIZE] for i in range(0, len(message.content), CHUNK_SIZE)]
             message.chunks = chunks
             message.total_chunks = len(chunks)
-            print(f"[ONION] Split message into {len(chunks)} chunks")
-            
+
         # Create the base message
         message_data = {
             'content': message.content if not message.chunks else message.chunks[0],
@@ -360,27 +338,35 @@ def create_onion_message(message: OnionMessage, sender_private_key: str) -> byte
             'message_type': message.message_type
         }
         
-        print(f"[ONION] Created base message data with ID {message.message_id}")
-        
+
         # Validate the message data
         if not validate_message(message_data):
             raise MessageValidationError("Invalid message data")
         
-        print("[ONION] Message data validated successfully")
-        
+
         # Convert to bytes and add checksum
         try:
-            payload = json.dumps(message_data).encode('utf-8')
-            print(f"[ONION] Converted message to bytes, length: {len(payload)}")
-            
+            metadata = {
+                'sender_id': message.sender_id,
+                'recipient_id': message.recipient_id,
+                'message_id': message.message_id,
+                'sequence_number': message.sequence_number,
+                'timestamp': message.timestamp,
+                'message_type': message.message_type,
+                'total_chunks': message.total_chunks,
+                'chunk_index': 0 if not message.chunks else 1
+            }
+
+            metadata_bytes = json.dumps(metadata).encode('utf-8')
+            metadata_length = len(metadata_bytes).to_bytes(4, byteorder='big')
+
+            payload = metadata_length + metadata_bytes + message.content
             payload_with_checksum = add_checksum(payload)
-            print(f"[ONION] Added checksum, new length: {len(payload_with_checksum)}")
         except Exception as e:
             raise MessageError(f"Failed to prepare message payload: {str(e)}")
         
         # Build the onion layers
-        print(f"[ONION] Building {len(message.layers)} encryption layers...")
-        
+
         for i, layer in enumerate(reversed(message.layers), 1):
             try:
                 next_ip, next_port = layer.next_address
@@ -392,16 +378,13 @@ def create_onion_message(message: OnionMessage, sender_private_key: str) -> byte
                     'checksum': True
                 }).encode('utf-8')
                 
-                print(f"[ONION] Created layer {i} data for next hop {next_ip}:{next_port}")
-                
+
                 # Don't add checksum here since encrypt_layer now handles it
                 payload_with_checksum = encrypt_layer(layer_data, layer.node_public_key)
-                print(f"[ONION] Encrypted layer {i}, new payload length: {len(payload_with_checksum)}")
-                
+
             except Exception as e:
                 raise MessageError(f"Failed to build layer {i}: {str(e)}")
         
-        print("[ONION] Successfully created complete onion message")
         return payload_with_checksum
         
     except MessageValidationError as e:
@@ -419,18 +402,15 @@ def process_onion_message(encrypted_data: bytes, node_private_key: str) -> Optio
     retries = 0
     while retries < MAX_RETRIES:
         try:
-            print(f"[PROCESS] Attempt {retries + 1} to process onion message")
-            
+
             # Validate input data
             if not encrypted_data:
                 raise MessageError("Empty encrypted data received")
-            print(f"[PROCESS] Received encrypted data of length: {len(encrypted_data)}")
-            
+
             try:
                 # First try to decrypt the layer
                 result = decrypt_layer(encrypted_data, node_private_key)
-                print("[PROCESS] Successfully decrypted layer")
-                
+
                 # Validate the decrypted result
                 if not result or len(result) != 2:
                     raise MessageError("Invalid decryption result format")
@@ -443,52 +423,45 @@ def process_onion_message(encrypted_data: bytes, node_private_key: str) -> Optio
                 if not next_address or len(next_address) != 2:
                     raise MessageError(f"Invalid next_address format: {next_address}")
                     
-                print(f"[PROCESS] Successfully processed message. Next hop: {next_address}")
                 return payload, next_address
                 
             except MessageCorruptionError as e:
-                print(f"[PROCESS] Message corruption detected: {str(e)}")
                 raise
             except MessageError as e:
-                print(f"[PROCESS] Message processing error: {str(e)}")
                 raise
             except Exception as e:
-                print(f"[PROCESS] Unexpected error during processing: {str(e)}")
                 raise MessageError(f"Unexpected processing error: {str(e)}")
                 
         except MessageCorruptionError:
             retries += 1
-            print(f"[PROCESS] Retrying after corruption (attempt {retries}/{MAX_RETRIES})")
             if retries >= MAX_RETRIES:
                 raise MessageError("Maximum retries exceeded - message corrupted")
             time.sleep(1)
         except MessageError as e:
-            print(f"[PROCESS] Fatal message processing error: {str(e)}")
             raise
         except Exception as e:
-            print(f"[PROCESS] Unhandled error: {str(e)}")
             raise MessageError(f"Failed to process message: {str(e)}")
 
 def receive_final_message(encrypted_data: bytes, recipient_private_key: str) -> Dict:
     """Receive and decrypt the final message at its destination with validation"""
     try:
-        print("[RECEIVE] Starting to process final message")
-        
+
         # Validate input
         if not encrypted_data:
             raise MessageError("Empty encrypted data received")
-        print(f"[RECEIVE] Received encrypted data of length: {len(encrypted_data)}")
-        
+
         try:
             # Attempt to decrypt the final layer
             payload, _ = decrypt_layer(encrypted_data, recipient_private_key)
-            print("[RECEIVE] Successfully decrypted final layer")
-            
+
             try:
                 # Try to decode and parse the message
-                message_dict = json.loads(payload.decode())
-                print("[RECEIVE] Successfully parsed message JSON")
-                
+                metadata_length = int.from_bytes(payload[:4], 'big')
+                metadata_bytes = payload[4:4 + metadata_length]
+                content = payload[4 + metadata_length:]
+
+                message_dict = json.loads(metadata_bytes.decode('utf-8'))
+                message_dict['content'] = content
                 # Detailed message validation
                 if not isinstance(message_dict, dict):
                     raise MessageValidationError("Message is not a valid dictionary")
@@ -509,19 +482,14 @@ def receive_final_message(encrypted_data: bytes, recipient_private_key: str) -> 
                 if message_age > MAX_MESSAGE_AGE:
                     raise MessageValidationError(f"Message too old (age: {message_age}s)")
                 
-                print(f"[RECEIVE] Message validation successful. ID: {message_dict.get('message_id')}")
                 return message_dict
                 
             except json.JSONDecodeError as e:
-                print(f"[RECEIVE] JSON decode error: {str(e)}")
-                print(f"[RECEIVE] Raw payload (first 100 bytes): {payload[:100]}")
                 raise MessageError(f"Failed to decode message JSON: {str(e)}")
             except MessageValidationError as e:
-                print(f"[RECEIVE] Validation error: {str(e)}")
                 raise
             
         except MessageError as e:
-            print(f"[RECEIVE] Decryption error: {str(e)}")
             raise
             
     except MessageError as e:
@@ -542,7 +510,7 @@ def create_message_ack(message_id: str, recipient_id: str) -> Dict:
 
 # a class to hold plain messages.
 class LocalMessage:
-    def __init__(self, message_id: int, recipient_username: str, message_type: int, is_income: bool, message, timestamp: Timestamp, is_read: bool):
+    def __init__(self, message_id: int, recipient_username: str, message_type: int, is_income: bool, message: bytes, timestamp: Timestamp, is_read: bool, suffix:str, receiver_id: str):
         self.message_id = message_id
         self.recipient_username = recipient_username
         self.message_type = message_type
@@ -550,3 +518,11 @@ class LocalMessage:
         self.message = message
         self.timestamp = timestamp
         self.is_read = is_read
+        self.suffix = suffix
+        if message_type != local_database.MESSAGE_TYPE_TEXT and local_database.MESSAGE_TYPE_IMAGE:
+            prefix = hashlib.sha256(message[:16] + str(timestamp).encode()).hexdigest()
+            path = f"users/{receiver_id}/tmp/{prefix}.{suffix}"
+            if not os.path.exists(path):
+                with open(path, "wb") as f:
+                    f.write(message)
+            self.path = path

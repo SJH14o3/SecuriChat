@@ -3,12 +3,31 @@ a Computer Networks project
 by Sajjad Jalili and Sina Ghani Abadi
 
 ## Server
-server will await for clients to connect
+first server will reset logs folder and creates database if it doesn't exist.
+then it will start a thread to ping every online user every three seconds. if a user don't respond, they will be removed as an online user.
+when a user signs in or logs in, they will be added to online users. their listening socket address will be stored.
+on main thread, server will await for clients to connect and creates a new thread when a user is connected.
+when a user signs in, it will store their information on server database.
+password and email address for each user are encrypted.
+when a user want to log in, first server check that username exists and then checks if password matches.
+
 
 ## Client
-when a client starts running, first it will check if server is online, then it will prompt the user to sign-in or login
+when a client starts running, first it will check if server is online, then it will prompt the user to sign-in or login.
+note that username, password and emails all have regex. user can also select an image as profile.
+upon signing in, a local database, private and public RSA keys and an AES key will be made.
+upon logging in/signing in, a temporary folder for storing medias will be made and a log file with listener port will be made too.
+every five seconds, a client will fetch all online users from server to allow peer to peer connection.
+clients can select a user to start chat with, and they can see their previous chats. they can only send message or media to online users.
+online users are marked with a green circle. when a message is sent, onion routing will be applied to it.
+messages are stored on both sides local database. the message content will be encrypted.
+when a user receive a message, they will be notified.
+upon logging off, temporary folder will be deleted and a message will be sent to server about logging out.
 
-### fetching online users
-every three seconds, server will ping all clients. if clients don't response, server will assume that they are offline.
-every five seconds, a client will fetch all online users from server. all online users are sent in one message
-from server since this project is not large scaled
+
+## TCP Connection
+all socket connection use TCP protocol especially because this is a reliable chat program.
+for sending large datas like images or videos, message is divided into chunks and chunks are sent one by one and
+the sender will receive them one by one and reassemble them into one message.
+
+## Onion Routing

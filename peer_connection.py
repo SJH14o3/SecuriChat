@@ -1,12 +1,10 @@
 import socket
 import threading
 import json
-import time
-from typing import Dict, Optional, Callable
-
+from typing import Dict, Callable
 from local_database import LocalDatabase, MESSAGE_TYPE_TEXT
-from message import OnionMessage, create_onion_message, process_onion_message, receive_final_message, LocalMessage
-from message import MessageError, create_message_ack
+from message import OnionMessage, create_onion_message, receive_final_message, LocalMessage
+from message import create_message_ack
 from log import Log
 from statics import *
 from timestamp import Timestamp
@@ -20,7 +18,7 @@ def get_message_database_type(type_: str) -> int:
         return 0
 
 class PeerConnection:
-    def __init__(self, username: str, private_key: str, log: Log, receiver_socket: socket.socket, database: LocalDatabase, aes_key):
+    def __init__(self, username: str, private_key: str, log: Log, receiver_socket: socket.socket, database: LocalDatabase, aes_key, menu):
         self.username = username
         self.private_key = private_key
         self.log = log
@@ -39,12 +37,10 @@ class PeerConnection:
         self.listen_thread = threading.Thread(target=self._listen_for_connections)
         self.listen_thread.daemon = True
         self.listen_thread.start()
+
+        self.menu = menu
         
         self.log.append_log(f"P2P Connection initialized for {username} on {self.ip}:{self.port}")
-
-    def register_message_handler(self, message_type: str, handler: Callable):
-        """Register a handler for a specific message type"""
-        self.message_handlers[message_type] = handler
 
     def _listen_for_connections(self):
         """Listen for incoming peer connections"""
@@ -64,6 +60,10 @@ class PeerConnection:
 
     def handle_peer_message(self, peer_socket: socket.socket, address: tuple):
         self.log.append_log(f"Handling peer message from {address}")
+        peer_socket.send(BUFFER.encode())
+        message_type_ = int(peer_socket.recv(1024).decode())
+        peer_socket.send(BUFFER.encode())
+        suffix = peer_socket.recv(1024).decode()
         peer_socket.sendall(BUFFER.encode())
         # Step 3: Receive message with improved chunking
         message_data = b""
@@ -104,14 +104,10 @@ class PeerConnection:
         self.log.append_log(f"Sent acknowledgment to {address}")
         # Handle message type
         message_type = message_dict.get('message_type', 'text')
-        local_message = LocalMessage(0, message_dict['sender_id'], get_message_database_type(message_dict['message_type']), True, message_dict['content'].encode(), Timestamp.get_now(), False)
+        local_message = LocalMessage(0, message_dict['sender_id'], message_type_, True, message_dict['content'], Timestamp.get_now(), False, suffix, self.username)
         self.database.store_message(local_message, self.aes_key, self.log)
-        if message_type in self.message_handlers:
-            self.message_handlers[message_type](message_dict)
-            self.log.append_log(f"Handled message of type {message_type} from {address}")
-        else:
-            print(f"[RECEIVE] No handler for message type {message_type} from {address}")
-            self.log.append_log(f"No handler for message type {message_type} from {address}")
+        self.menu.emit_message_received_signal(local_message)
+        self.log.append_log(f"Handled message of type {message_type} from {address}")
 
     def _handle_peer_connection(self, peer_socket: socket.socket, address: tuple):
         """Handle incoming peer connection"""
@@ -137,7 +133,7 @@ class PeerConnection:
             except Exception as e:
                 self.log.append_log(f"Error in final clause for _handle_peer_connection: {str(e)}")
 
-    def send_message(self, recipient_username: str, message_content: str, message_type: str = 'text') -> bool:
+    def send_message(self, recipient_username: str, message_content: bytes, message_type: int, suffix: str = 'text') -> bool:
         """Send a message to a peer"""
         if recipient_username not in self.peers:
             self.log.append_log(f"Unknown recipient: {recipient_username}")
@@ -187,7 +183,10 @@ class PeerConnection:
                     except Exception as e:
                         print(f"[SEND] Failed to get valid ready signal from {recipient_username}: {str(e)}")
                         return False
-                    
+                    s.send(f"{message_type}".encode())
+                    s.recv(1024) # other user OK
+                    s.send(f"{suffix}".encode())
+                    s.recv(1024) # other user OK
                     # Send encrypted message in chunks
                     msg_with_end = encrypted_message + b"END_OF_MESSAGE"
                     chunks = [msg_with_end[i:i + CHUNK_SIZE] for i in range(0, len(msg_with_end), CHUNK_SIZE)]
@@ -216,7 +215,7 @@ class PeerConnection:
 
                     ack = json.loads(ack_json)
                     if ack.get('type') == 'ack' and ack.get('message_id') == message.message_id:
-                        local_message = LocalMessage(0, recipient_username, get_message_database_type(message_type), False, message_content.encode(), Timestamp.get_now(), True)
+                        local_message = LocalMessage(0, recipient_username, message_type, False, message_content, Timestamp.get_now(), True, suffix, self.username)
                         self.database.store_message(local_message, self.aes_key, self.log)
                         return True
 
