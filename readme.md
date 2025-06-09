@@ -35,4 +35,5 @@ We use an onion routing system for secure, anonymous message transmission, inspi
 by default the messages go past through 2 middle nodes that means that the messages are encrypted and decrypted twice from the sender to the receiver.
 
 ## P2P Connection
-The Peer to Peer conection sets up a listening socket to accept incoming connections, handles server pings, and processes encrypted messages from peers. Messages are received in chunks, decrypted using a private key, stored in a local database, and acknowledged to the sender. It sends encrypted messages to peers in chunks, confirms delivery with acknowledgments, and stores sent messages locally. Peer information (IP, port, public key) is managed, and connections can be stopped, with all actions logged for debugging.
+The Peer to Peer each logged in user will sets up a listening socket to accept incoming connections,
+to handles server pings, and processes encrypted messages from peers. Messages are received in chunks, decrypted using a private key, stored in a local database, and acknowledged to the sender. It sends encrypted messages to peers in chunks, confirms delivery with acknowledgments, and stores sent messages locally. Peer information (IP, port, public key) is managed, and connections can be stopped, with all actions logged for debugging.
