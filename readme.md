@@ -31,3 +31,8 @@ for sending large datas like images or videos, message is divided into chunks an
 the sender will receive them one by one and reassemble them into one message.
 
 ## Onion Routing
+We use an onion routing system for secure, anonymous message transmission, inspired by protocols like Tor. Onion routing ensures that messages are encrypted in multiple layers and routed through several nodes, concealing the sender, recipient, and content from intermediaries. In the provided onion routing mechanism, error detection and checksums ensure message integrity and detect corruption or tampering during transmission.
+by default the messages go past through 2 middle nodes that means that the messages are encrypted and decrypted twice from the sender to the receiver.
+
+## P2P Connection
+The Peer to Peer conection sets up a listening socket to accept incoming connections, handles server pings, and processes encrypted messages from peers. Messages are received in chunks, decrypted using a private key, stored in a local database, and acknowledged to the sender. It sends encrypted messages to peers in chunks, confirms delivery with acknowledgments, and stores sent messages locally. Peer information (IP, port, public key) is managed, and connections can be stopped, with all actions logged for debugging.
